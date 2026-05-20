@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id          String          @id @default(cuid())
+  name        String
+  description String?
+  platform    String          @default("pixverse")
+  language    String          @default("English")
+  aspectRatio String          @default("16:9")
+  style       String          @default("cinematic")
+  duration    Int             @default(5)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  scenes      Scene[]
+  assets      Asset[]
+  jobs        GenerationJob[]
+}
+
+model Scene {
+  id                     String          @id @default(cuid())
+  projectId              String
+  project                Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title                  String          @default("Scene")
+  description            String
+  platform               String          @default("pixverse")
+  language               String          @default("English")
+  aspectRatio            String          @default("16:9")
+  style                  String          @default("cinematic")
+  duration               Int             @default(5)
+  promptReviewed         Boolean         @default(false)
+  currentPromptVersionId String?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  assets                 Asset[]
+  promptVersions         PromptVersion[]
+  jobs                   GenerationJob[]
+}
+
+model Asset {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sceneId      String?
+  scene        Scene?   @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  type         String
+  role         String   @default("reference")
+  filename     String
+  originalName String
+  mime         String
+  size         Int
+  path         String
+  createdAt    DateTime @default(now())
+}
+
+model PromptVersion {
+  id                             String    @id @default(cuid())
+  sceneId                        String
+  scene                          Scene     @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  version                        Int
+  imagePrompt                    String
+  negativePrompt                 String
+  videoReferenceImagePrompt      String
+  pixverseVideoPrompt            String
+  motionCameraActionPrompt       String
+  sourceMetadata                 String?
+  reviewedAt                     DateTime?
+  createdAt                      DateTime  @default(now())
+}
+
+model Capability {
+  id                String   @id @default(cuid())
+  provider          String
+  source            String
+  method            String
+  path              String
+  purpose           String
+  requestSchema     String?
+  responseSchema    String?
+  riskLevel         String   @default("medium")
+  productionAllowed Boolean  @default(false)
+  enabled           Boolean  @default(false)
+  notes             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model GenerationJob {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sceneId        String
+  scene          Scene    @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  provider       String
+  capabilityId   String?
+  request        String
+  response       String?
+  externalTaskId String?
+  status         String   @default("queued")
+  resultUrl      String?
+  error          String?
+  retryCount     Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
