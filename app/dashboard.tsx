@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -148,22 +148,22 @@ export default function Dashboard({
 
   const observedCapabilities = capabilities.filter((capability) => capability.provider === "observed_web_api");
 
-  async function loadProjects(projectIdToLoad?: string) {
-    const response = await fetch("/api/projects");
-    const data = (await response.json()) as { projects: Project[] };
-    setProjects(data.projects);
-    const id = projectIdToLoad || initialProjectId || project?.id || data.projects[0]?.id;
-    if (id) await loadProject(id);
-  }
-
-  async function loadProject(id: string) {
+  const loadProject = useCallback(async (id: string) => {
     const response = await fetch(`/api/projects/${id}`);
     const data = (await response.json()) as { project: Project };
     setProject(data.project);
     setSelectedSceneId((current) => current || data.project.scenes[0]?.id || "");
-  }
+  }, []);
 
-  async function loadMeta() {
+  const loadProjects = useCallback(async (projectIdToLoad?: string) => {
+    const response = await fetch("/api/projects");
+    const data = (await response.json()) as { projects: Project[] };
+    setProjects(data.projects);
+    const id = projectIdToLoad || initialProjectId || data.projects[0]?.id;
+    if (id) await loadProject(id);
+  }, [initialProjectId, loadProject]);
+
+  const loadMeta = useCallback(async () => {
     const [capabilityResponse, jobsResponse, settingsResponse] = await Promise.all([
       fetch("/api/capabilities"),
       fetch("/api/jobs"),
@@ -172,12 +172,12 @@ export default function Dashboard({
     setCapabilities(((await capabilityResponse.json()) as { capabilities: Capability[] }).capabilities);
     setJobs(((await jobsResponse.json()) as { jobs: Job[] }).jobs);
     setSettings(((await settingsResponse.json()) as { settings: SettingsPayload }).settings);
-  }
+  }, []);
 
   useEffect(() => {
     void loadProjects(initialProjectId);
     void loadMeta();
-  }, [initialProjectId]);
+  }, [initialProjectId, loadMeta, loadProjects]);
 
   useEffect(() => {
     const latest = selectedScene?.promptVersions[0];

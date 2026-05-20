@@ -7,6 +7,7 @@ node_modules
 dev.db
 
 out
+dist
 build
 .env*.local
 !.env.example

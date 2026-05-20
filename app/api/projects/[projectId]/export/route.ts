@@ -28,7 +28,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
     }
   }
 
-  const content = await zip.generateAsync({ type: "uint8array" });
+  const content = await zip.generateAsync({ type: "arraybuffer" });
   return new Response(content, {
     headers: {
       "Content-Type": "application/zip",
