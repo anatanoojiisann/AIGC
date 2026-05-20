@@ -145,16 +145,22 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(`Invalid response from ${url}.`);
   }
 
+  if (!response.ok) {
+    if (payload && typeof payload === "object" && "ok" in payload) {
+      const envelope = payload as ApiEnvelope<T>;
+      if (!envelope.ok) {
+        throw new Error(envelope.error?.message || `Request failed (${response.status}): ${url}`);
+      }
+    }
+    throw new Error(`Request failed (${response.status}): ${url}`);
+  }
+
   if (payload && typeof payload === "object" && "ok" in payload) {
     const envelope = payload as ApiEnvelope<T>;
     if (!envelope.ok) {
       throw new Error(envelope.error?.message || `Request failed: ${url}`);
     }
     return envelope.data;
-  }
-
-  if (!response.ok) {
-    throw new Error(`Request failed (${response.status}): ${url}`);
   }
 
   return payload as T;
