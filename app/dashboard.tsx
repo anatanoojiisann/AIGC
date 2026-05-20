@@ -120,6 +120,46 @@ const emptyPrompt = {
   motionCameraActionPrompt: ""
 };
 
+type ApiEnvelope<T> =
+  | { ok: true; data: T }
+  | {
+      ok: false;
+      error?: {
+        code?: string;
+        message?: string;
+      };
+    };
+
+function errorText(error: unknown) {
+  return error instanceof Error && error.message ? error.message : "Something went wrong.";
+}
+
+async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  const text = await response.text();
+  let payload: unknown = null;
+
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(`Invalid response from ${url}.`);
+  }
+
+  if (payload && typeof payload === "object" && "ok" in payload) {
+    const envelope = payload as ApiEnvelope<T>;
+    if (!envelope.ok) {
+      throw new Error(envelope.error?.message || `Request failed: ${url}`);
+    }
+    return envelope.data;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}): ${url}`);
+  }
+
+  return payload as T;
+}
+
 export default function Dashboard({
   initialView = "projects",
   initialProjectId
@@ -138,6 +178,7 @@ export default function Dashboard({
   const [provider, setProvider] = useState("official_pixverse");
   const [capabilityId, setCapabilityId] = useState("");
   const [notice, setNotice] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
   const [harReport, setHarReport] = useState<unknown>(null);
   const [promptFields, setPromptFields] = useState(emptyPrompt);
 
@@ -149,29 +190,45 @@ export default function Dashboard({
   const observedCapabilities = capabilities.filter((capability) => capability.provider === "observed_web_api");
 
   const loadProject = useCallback(async (id: string) => {
-    const response = await fetch(`/api/projects/${id}`);
-    const data = (await response.json()) as { project: Project };
-    setProject(data.project);
-    setSelectedSceneId((current) => current || data.project.scenes[0]?.id || "");
+    try {
+      const data = await apiRequest<{ project: Project }>(`/api/projects/${id}`);
+      setProject(data.project);
+      setSelectedSceneId((current) => current || data.project.scenes[0]?.id || "");
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    }
   }, []);
 
   const loadProjects = useCallback(async (projectIdToLoad?: string) => {
-    const response = await fetch("/api/projects");
-    const data = (await response.json()) as { projects: Project[] };
-    setProjects(data.projects);
-    const id = projectIdToLoad || initialProjectId || data.projects[0]?.id;
-    if (id) await loadProject(id);
+    try {
+      const data = await apiRequest<{ projects: Project[] }>("/api/projects");
+      setProjects(data.projects);
+      const id = projectIdToLoad || initialProjectId || data.projects[0]?.id;
+      if (id) await loadProject(id);
+      setErrorMessage("");
+    } catch (error) {
+      setProjects([]);
+      setErrorMessage(errorText(error));
+    }
   }, [initialProjectId, loadProject]);
 
   const loadMeta = useCallback(async () => {
-    const [capabilityResponse, jobsResponse, settingsResponse] = await Promise.all([
-      fetch("/api/capabilities"),
-      fetch("/api/jobs"),
-      fetch("/api/settings")
-    ]);
-    setCapabilities(((await capabilityResponse.json()) as { capabilities: Capability[] }).capabilities);
-    setJobs(((await jobsResponse.json()) as { jobs: Job[] }).jobs);
-    setSettings(((await settingsResponse.json()) as { settings: SettingsPayload }).settings);
+    try {
+      const [capabilityData, jobData, settingsData] = await Promise.all([
+        apiRequest<{ capabilities: Capability[] }>("/api/capabilities"),
+        apiRequest<{ jobs: Job[] }>("/api/jobs"),
+        apiRequest<{ settings: SettingsPayload }>("/api/settings")
+      ]);
+      setCapabilities(capabilityData.capabilities);
+      setJobs(jobData.jobs);
+      setSettings(settingsData.settings);
+      setErrorMessage("");
+    } catch (error) {
+      setCapabilities([]);
+      setJobs([]);
+      setErrorMessage(errorText(error));
+    }
   }, []);
 
   useEffect(() => {
@@ -195,42 +252,57 @@ export default function Dashboard({
   }, [selectedScene?.id, selectedScene?.promptVersions]);
 
   async function createProject() {
-    const response = await fetch("/api/projects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newProjectName })
-    });
-    const data = (await response.json()) as { project: Project };
-    setNotice("Project created.");
-    setView("editor");
-    await loadProjects(data.project.id);
+    try {
+      const data = await apiRequest<{ project: Project }>("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newProjectName })
+      });
+      setNotice("Project created.");
+      setErrorMessage("");
+      setView("editor");
+      await loadProjects(data.project.id);
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function createScene() {
     if (!project) return;
-    const response = await fetch("/api/scenes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        projectId: project.id,
-        title: `Scene ${project.scenes.length + 1}`,
-        description: "A cinematic product moment with clear subject action."
-      })
-    });
-    const data = (await response.json()) as { scene: Scene };
-    setSelectedSceneId(data.scene.id);
-    setNotice("Scene created.");
-    await loadProject(project.id);
+    try {
+      const data = await apiRequest<{ scene: Scene }>("/api/scenes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          title: `Scene ${project.scenes.length + 1}`,
+          description: "A cinematic product moment with clear subject action."
+        })
+      });
+      setSelectedSceneId(data.scene.id);
+      setNotice("Scene created.");
+      setErrorMessage("");
+      await loadProject(project.id);
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function updateScene(field: keyof Scene, value: string | number) {
     if (!selectedScene || !project) return;
-    await fetch(`/api/scenes/${selectedScene.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [field]: value })
-    });
-    await loadProject(project.id);
+    try {
+      await apiRequest<{ scene: Scene }>(`/api/scenes/${selectedScene.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: value })
+      });
+      setErrorMessage("");
+      await loadProject(project.id);
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function uploadFiles(files: FileList | null, role = "reference") {
@@ -239,70 +311,97 @@ export default function Dashboard({
     Array.from(files).forEach((file) => form.append("files", file));
     form.append("sceneId", selectedScene.id);
     form.append("role", role);
-    await fetch(`/api/projects/${project.id}/files`, { method: "POST", body: form });
-    setNotice(role === "replacement" ? "Replacement file uploaded." : "Reference file uploaded.");
-    await loadProject(project.id);
+    try {
+      await apiRequest<{ assets: Asset[] }>(`/api/projects/${project.id}/files`, { method: "POST", body: form });
+      setNotice(role === "replacement" ? "Replacement file uploaded." : "Reference file uploaded.");
+      setErrorMessage("");
+      await loadProject(project.id);
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function generatePrompts() {
     if (!selectedScene || !project) return;
-    const response = await fetch(`/api/scenes/${selectedScene.id}/prompts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selectedScene)
-    });
-    const data = (await response.json()) as { prompt: PromptVersion };
-    setPromptFields({
-      imagePrompt: data.prompt.imagePrompt,
-      negativePrompt: data.prompt.negativePrompt,
-      videoReferenceImagePrompt: data.prompt.videoReferenceImagePrompt,
-      pixverseVideoPrompt: data.prompt.pixverseVideoPrompt,
-      motionCameraActionPrompt: data.prompt.motionCameraActionPrompt
-    });
-    setNotice("Draft prompts generated.");
-    await loadProject(project.id);
+    try {
+      const data = await apiRequest<{ prompt: PromptVersion }>(`/api/scenes/${selectedScene.id}/prompts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selectedScene)
+      });
+      setPromptFields({
+        imagePrompt: data.prompt.imagePrompt,
+        negativePrompt: data.prompt.negativePrompt,
+        videoReferenceImagePrompt: data.prompt.videoReferenceImagePrompt,
+        pixverseVideoPrompt: data.prompt.pixverseVideoPrompt,
+        motionCameraActionPrompt: data.prompt.motionCameraActionPrompt
+      });
+      setNotice("Draft prompts generated.");
+      setErrorMessage("");
+      await loadProject(project.id);
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function savePrompts() {
     if (!selectedScene || !project) return;
-    await fetch(`/api/scenes/${selectedScene.id}/prompts`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...promptFields,
-        previousPromptVersionId: selectedScene.promptVersions[0]?.id
-      })
-    });
-    setNotice("Prompt version saved and marked reviewed.");
-    await loadProject(project.id);
+    try {
+      await apiRequest<{ prompt: PromptVersion }>(`/api/scenes/${selectedScene.id}/prompts`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...promptFields,
+          previousPromptVersionId: selectedScene.promptVersions[0]?.id
+        })
+      });
+      setNotice("Prompt version saved and marked reviewed.");
+      setErrorMessage("");
+      await loadProject(project.id);
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function submitJob() {
     if (!selectedScene || !project) return;
-    const response = await fetch("/api/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sceneId: selectedScene.id,
-        provider,
-        capabilityId: provider === "observed_web_api" ? capabilityId : null
-      })
-    });
-    const data = await response.json();
-    setNotice(response.ok ? "Generation job submitted." : data.error);
-    await Promise.all([loadProject(project.id), loadMeta()]);
+    try {
+      await apiRequest<{ job: Job }>("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sceneId: selectedScene.id,
+          provider,
+          capabilityId: provider === "observed_web_api" ? capabilityId : null
+        })
+      });
+      setNotice("Generation job submitted.");
+      setErrorMessage("");
+      await Promise.all([loadProject(project.id), loadMeta()]);
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function retryJob(jobId: string, nextProvider?: string) {
-    const response = await fetch(`/api/jobs/${jobId}/retry`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: nextProvider })
-    });
-    const data = await response.json();
-    setNotice(response.ok ? "Retry submitted." : data.error);
-    if (project) await loadProject(project.id);
-    await loadMeta();
+    try {
+      await apiRequest<{ job: Job }>(`/api/jobs/${jobId}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: nextProvider })
+      });
+      setNotice("Retry submitted.");
+      setErrorMessage("");
+      if (project) await loadProject(project.id);
+      await loadMeta();
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function analyzeHar(files: FileList | null) {
@@ -310,20 +409,30 @@ export default function Dashboard({
     if (!file) return;
     const form = new FormData();
     form.append("file", file);
-    const response = await fetch("/api/har/analyze", { method: "POST", body: form });
-    const data = await response.json();
-    setHarReport(data.report || data);
-    setNotice(response.ok ? "HAR report sanitized and capabilities stored disabled." : data.error);
-    await loadMeta();
+    try {
+      const data = await apiRequest<{ report?: unknown }>("/api/har/analyze", { method: "POST", body: form });
+      setHarReport(data.report || data);
+      setNotice("HAR report sanitized and capabilities stored disabled.");
+      setErrorMessage("");
+      await loadMeta();
+    } catch (error) {
+      setNotice("");
+      setErrorMessage(errorText(error));
+    }
   }
 
   async function updateCapability(capability: Capability, patch: Partial<Capability>) {
-    await fetch(`/api/capabilities/${capability.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch)
-    });
-    await loadMeta();
+    try {
+      await apiRequest<{ capability: Capability }>(`/api/capabilities/${capability.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      setErrorMessage("");
+      await loadMeta();
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    }
   }
 
   function exportProject() {
@@ -366,6 +475,13 @@ export default function Dashboard({
           <div className="mb-4 flex items-center gap-2 rounded-md border bg-white px-3 py-2 text-sm">
             <CheckCircle2 className="h-4 w-4 text-primary" />
             {notice}
+          </div>
+        ) : null}
+
+        {errorMessage ? (
+          <div className="mb-4 flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
+            <AlertTriangle className="h-4 w-4" />
+            {errorMessage}
           </div>
         ) : null}
 

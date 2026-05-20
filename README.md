@@ -30,7 +30,7 @@ Local Next.js App Router MVP for a PixVerse / Pai.video prompt and mock generati
 
 ```bash
 npm install
-cp .env.example .env
+cp .env.example .env.local
 npx prisma generate
 npx prisma migrate dev
 npm run dev
@@ -46,27 +46,9 @@ npm run typecheck
 npm run build
 ```
 
-## Current Workspace Verification Status
-
-Dependency installation could not be completed in this Codex workspace because `registry.npmjs.org` is unreachable from the environment:
-
-```text
-getaddrinfo ENOTFOUND registry.npmjs.org
-```
-
-Because dependencies could not be installed here, these checks are pending local verification on a machine with npm registry access:
-
-- `npm install`
-- `npx prisma generate`
-- `npm run lint`
-- `npm run typecheck`
-- `npm run build`
-
-Do not treat these checks as passed until they have been run successfully in an environment that can resolve `registry.npmjs.org`.
-
 ## Environment
 
-`.env.example` contains placeholder values only. Keep `.env` and `.env.local` out of Git.
+`.env.example` contains placeholder values only. Copy it to `.env.local` for local development. Keep `.env` and `.env.local` out of Git.
 
 ```bash
 PIXVERSE_API_KEY=
