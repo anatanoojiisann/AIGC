@@ -128,6 +128,28 @@ type SettingsPayload = {
   redisConfigured: boolean;
 };
 
+type ProviderSource = "mock" | "pixverse_official_api" | "pixverse_web_browser" | "pai_video_web_browser";
+
+type ProviderSettingsData = {
+  activeSource: ProviderSource;
+  pixverseOfficialApi: {
+    enabled: boolean;
+    apiKeyConfigured: boolean;
+    maskedKey: string | null;
+  };
+  pixverseWebBrowser: {
+    enabled: boolean;
+    loginStatus: string;
+    profilePath: string;
+  };
+  paiVideoWebBrowser: {
+    enabled: boolean;
+    loginStatus: string;
+    profilePath: string;
+  };
+  sources: Record<ProviderSource, string>;
+};
+
 type View = "projects" | "editor" | "settings" | "har" | "capabilities" | "jobs" | "cleanup";
 
 const emptyPrompt = {
@@ -199,8 +221,9 @@ export default function Dashboard({
   const [jobs, setJobs] = useState<Job[]>([]);
   const [cleanupJobs, setCleanupJobs] = useState<VideoCleanupJob[]>([]);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
+  const [providerSettings, setProviderSettings] = useState<ProviderSettingsData | null>(null);
   const [newProjectName, setNewProjectName] = useState("PixVerse Project");
-  const [provider, setProvider] = useState("official_pixverse");
+  const [provider, setProvider] = useState<ProviderSource>("mock");
   const [capabilityId, setCapabilityId] = useState("");
   const [notice, setNotice] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -240,21 +263,25 @@ export default function Dashboard({
 
   const loadMeta = useCallback(async () => {
     try {
-      const [capabilityData, jobData, settingsData, cleanupJobData] = await Promise.all([
+      const [capabilityData, jobData, settingsData, cleanupJobData, providerSettingsData] = await Promise.all([
         apiRequest<{ capabilities: Capability[] }>("/api/capabilities"),
         apiRequest<{ jobs: Job[] }>("/api/jobs"),
         apiRequest<{ settings: SettingsPayload }>("/api/settings"),
-        apiRequest<{ jobs: VideoCleanupJob[] }>("/api/video-cleanup/jobs")
+        apiRequest<{ jobs: VideoCleanupJob[] }>("/api/video-cleanup/jobs"),
+        apiRequest<{ settings: ProviderSettingsData }>("/api/provider-settings")
       ]);
       setCapabilities(capabilityData.capabilities);
       setJobs(jobData.jobs);
       setSettings(settingsData.settings);
       setCleanupJobs(cleanupJobData.jobs);
+      setProviderSettings(providerSettingsData.settings);
+      setProvider(providerSettingsData.settings.activeSource);
       setErrorMessage("");
     } catch (error) {
       setCapabilities([]);
       setJobs([]);
       setCleanupJobs([]);
+      setProviderSettings(null);
       setErrorMessage(errorText(error));
     }
   }, []);
@@ -396,14 +423,19 @@ export default function Dashboard({
 
   async function submitJob() {
     if (!selectedScene || !project) return;
+    if (provider !== "mock") {
+      setNotice("");
+      setErrorMessage("Only mock generation is enabled for this MVP. Use Provider Settings to connect accounts and test API keys.");
+      return;
+    }
     try {
       await apiRequest<{ job: Job }>("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sceneId: selectedScene.id,
-          provider,
-          capabilityId: provider === "observed_web_api" ? capabilityId : null
+          provider: "official_pixverse",
+          capabilityId: null
         })
       });
       setNotice("Generation job submitted.");
@@ -466,6 +498,25 @@ export default function Dashboard({
   function exportProject() {
     if (!project) return;
     window.location.href = `/api/projects/${project.id}/export`;
+  }
+
+  async function refreshProviderSettings() {
+    const data = await apiRequest<{ settings: ProviderSettingsData }>("/api/provider-settings");
+    setProviderSettings(data.settings);
+    setProvider(data.settings.activeSource);
+    return data.settings;
+  }
+
+  async function saveActiveProviderSource(activeSource: ProviderSource) {
+    const data = await apiRequest<{ settings: ProviderSettingsData }>("/api/provider-settings/active-source", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activeSource })
+    });
+    setProviderSettings(data.settings);
+    setProvider(data.settings.activeSource);
+    setNotice("Active source saved.");
+    setErrorMessage("");
   }
 
   return (
@@ -564,7 +615,16 @@ export default function Dashboard({
           />
         ) : null}
 
-        {view === "settings" ? <ProviderSettings settings={settings} /> : null}
+        {view === "settings" ? (
+          <ProviderSettings
+            settings={settings}
+            providerSettings={providerSettings}
+            refreshProviderSettings={refreshProviderSettings}
+            saveActiveProviderSource={saveActiveProviderSource}
+            setNotice={setNotice}
+            setErrorMessage={setErrorMessage}
+          />
+        ) : null}
         {view === "har" ? <HarAnalyzerView analyzeHar={analyzeHar} report={harReport} /> : null}
         {view === "capabilities" ? (
           <CapabilityRegistry capabilities={capabilities} updateCapability={updateCapability} />
@@ -627,8 +687,8 @@ function SceneEditor(props: {
   savePrompts: () => void;
   promptFields: typeof emptyPrompt;
   setPromptFields: (fields: typeof emptyPrompt) => void;
-  provider: string;
-  setProvider: (provider: string) => void;
+  provider: ProviderSource;
+  setProvider: (provider: ProviderSource) => void;
   capabilities: Capability[];
   capabilityId: string;
   setCapabilityId: (id: string) => void;
@@ -819,26 +879,19 @@ function SceneEditor(props: {
           </CardHeader>
           <CardContent className="space-y-3">
             <Field label="Provider">
-              <Select value={props.provider} onChange={(event) => props.setProvider(event.target.value)}>
-                <option value="official_pixverse">official_pixverse</option>
-                <option value="observed_web_api">observed_web_api</option>
-                <option value="playwright_automation">playwright_automation</option>
+              <Select value={props.provider} onChange={(event) => props.setProvider(event.target.value as ProviderSource)}>
+                <option value="mock">mock</option>
+                <option value="pixverse_official_api">pixverse_official_api</option>
+                <option value="pixverse_web_browser">pixverse_web_browser</option>
+                <option value="pai_video_web_browser">pai_video_web_browser</option>
               </Select>
             </Field>
-            {props.provider === "observed_web_api" ? (
-              <Field label="Observed Capability">
-                <Select value={props.capabilityId} onChange={(event) => props.setCapabilityId(event.target.value)}>
-                  <option value="">Select manually enabled capability</option>
-                  {props.capabilities.map((capability) => (
-                    <option key={capability.id} value={capability.id}>
-                      {capability.method} {capability.path}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            ) : null}
             <div className="rounded-md border bg-muted/60 p-3 text-sm">
-              {scene?.promptReviewed ? "Reviewed prompt version ready." : "Save reviewed prompts before submission."}
+              {props.provider === "mock"
+                ? scene?.promptReviewed
+                  ? "Reviewed prompt version ready for mock generation."
+                  : "Save reviewed prompts before submission."
+                : "This source can be configured now. Generation remains mock-only in this MVP."}
             </div>
             <Button className="w-full" onClick={props.submitJob} disabled={!scene?.promptReviewed}>
               <Play className="h-4 w-4" />
@@ -887,23 +940,292 @@ function PromptField({ label, value, onChange }: { label: string; value: string;
   );
 }
 
-function ProviderSettings({ settings }: { settings: SettingsPayload | null }) {
+function ProviderSettings({
+  settings,
+  providerSettings,
+  refreshProviderSettings,
+  saveActiveProviderSource,
+  setNotice,
+  setErrorMessage
+}: {
+  settings: SettingsPayload | null;
+  providerSettings: ProviderSettingsData | null;
+  refreshProviderSettings: () => Promise<ProviderSettingsData>;
+  saveActiveProviderSource: (activeSource: ProviderSource) => Promise<void>;
+  setNotice: (message: string) => void;
+  setErrorMessage: (message: string) => void;
+}) {
+  const [activeSourceDraft, setActiveSourceDraft] = useState<ProviderSource>("mock");
+  const [apiKey, setApiKey] = useState("");
+  const [pixverseLoginMethod, setPixverseLoginMethod] = useState("email");
+  const [phoneHint, setPhoneHint] = useState("");
+  const [loadingAction, setLoadingAction] = useState("");
+
+  useEffect(() => {
+    if (providerSettings?.activeSource) setActiveSourceDraft(providerSettings.activeSource);
+  }, [providerSettings?.activeSource]);
+
+  async function runSettingsAction(label: string, action: () => Promise<void>) {
+    setLoadingAction(label);
+    setErrorMessage("");
+    setNotice("");
+    try {
+      await action();
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    } finally {
+      setLoadingAction("");
+    }
+  }
+
+  async function saveApiKey() {
+    await apiRequest("/api/provider-settings/api-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey })
+    });
+    setApiKey("");
+    await refreshProviderSettings();
+    setNotice("PixVerse API key saved.");
+  }
+
+  async function clearApiKey() {
+    await apiRequest("/api/provider-settings/api-key", { method: "DELETE" });
+    await refreshProviderSettings();
+    setNotice("PixVerse API key cleared.");
+  }
+
+  async function testApiKey() {
+    const data = await apiRequest<{ message: string }>("/api/provider-settings/test-pixverse-api-key", { method: "POST" });
+    await refreshProviderSettings();
+    setNotice(data.message);
+  }
+
+  async function startPixverseLogin() {
+    await apiRequest("/api/provider-settings/pixverse-web/start-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: pixverseLoginMethod })
+    });
+    await refreshProviderSettings();
+    setNotice("PixVerse login opened in a local browser session.");
+  }
+
+  async function startPaiLogin() {
+    await apiRequest("/api/provider-settings/pai-video/start-login", { method: "POST" });
+    await refreshProviderSettings();
+    setNotice("pai.video login opened in a local browser session.");
+  }
+
+  const status = providerSettings?.sources || {
+    mock: "available",
+    pixverse_official_api: "needs_api_key",
+    pixverse_web_browser: "needs_login",
+    pai_video_web_browser: "needs_login"
+  };
+  const selectedStatus = status[activeSourceDraft];
+  const sourceLabels: Record<ProviderSource, string> = {
+    mock: "mock",
+    pixverse_official_api: "pixverse_official_api",
+    pixverse_web_browser: "pixverse_web_browser",
+    pai_video_web_browser: "pai_video_web_browser"
+  };
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>API Provider Settings</CardTitle>
-      </CardHeader>
-      <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {settings
-          ? Object.entries(settings).map(([key, value]) => (
-              <div key={key} className="rounded-md border bg-white p-3">
-                <div className="text-xs text-muted-foreground">{key}</div>
-                <div className="mt-1 font-medium">{String(value)}</div>
+    <div className="grid gap-4 xl:grid-cols-2">
+      <div className="xl:col-span-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+        Web login opens the official website in a local browser session. This app does not collect passwords, Google
+        credentials, phone verification codes, cookies, or session tokens.
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Active API Source</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Field label="Current source">
+            <Select value={activeSourceDraft} onChange={(event) => setActiveSourceDraft(event.target.value as ProviderSource)}>
+              {(Object.keys(sourceLabels) as ProviderSource[]).map((source) => (
+                <option key={source} value={source}>
+                  {sourceLabels[source]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="grid gap-2 text-sm sm:grid-cols-2">
+            {(Object.keys(sourceLabels) as ProviderSource[]).map((source) => (
+              <div key={source} className="rounded-md border bg-white p-2">
+                <div className="font-medium">{sourceLabels[source]}</div>
+                <div className="text-xs text-muted-foreground">{status[source]}</div>
               </div>
-            ))
-          : null}
-      </CardContent>
-    </Card>
+            ))}
+          </div>
+          {selectedStatus !== "available" && selectedStatus !== "connected" ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-950">
+              Selected source is not ready: {selectedStatus}.
+            </div>
+          ) : null}
+          <Button
+            onClick={() => runSettingsAction("active-source", () => saveActiveProviderSource(activeSourceDraft))}
+            disabled={loadingAction === "active-source"}
+          >
+            Save Active Source
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>PixVerse Official API Key</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="rounded-md border bg-white p-3 text-sm">
+            <div className="text-xs text-muted-foreground">Configured</div>
+            <div className="font-medium">{String(providerSettings?.pixverseOfficialApi.apiKeyConfigured || false)}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {providerSettings?.pixverseOfficialApi.maskedKey || "No key saved"}
+            </div>
+          </div>
+          <Field label="API Key">
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder="Paste PixVerse official API key"
+            />
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => runSettingsAction("save-api-key", saveApiKey)} disabled={loadingAction !== ""}>
+              Save API Key
+            </Button>
+            <Button variant="outline" onClick={() => runSettingsAction("test-api-key", testApiKey)} disabled={loadingAction !== ""}>
+              Test API Key
+            </Button>
+            <Button variant="outline" onClick={() => runSettingsAction("clear-api-key", clearApiKey)} disabled={loadingAction !== ""}>
+              Clear API Key
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>PixVerse Web Account</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <StatusBadge label="Status" value={providerSettings?.pixverseWebBrowser.loginStatus || "not_connected"} />
+          <Field label="Login Method">
+            <Select value={pixverseLoginMethod} onChange={(event) => setPixverseLoginMethod(event.target.value)}>
+              <option value="email">Email login</option>
+              <option value="google">Google login</option>
+            </Select>
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => runSettingsAction("pixverse-start", startPixverseLogin)} disabled={loadingAction !== ""}>
+              Open PixVerse Login
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() =>
+                runSettingsAction("pixverse-check", async () => {
+                  await apiRequest("/api/provider-settings/pixverse-web/check-login", { method: "POST" });
+                  await refreshProviderSettings();
+                  setNotice("PixVerse login status checked.");
+                })
+              }
+              disabled={loadingAction !== ""}
+            >
+              Check Login Status
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() =>
+                runSettingsAction("pixverse-disconnect", async () => {
+                  await apiRequest("/api/provider-settings/pixverse-web/disconnect", { method: "POST" });
+                  await refreshProviderSettings();
+                  setNotice("PixVerse local browser session disconnected.");
+                })
+              }
+              disabled={loadingAction !== ""}
+            >
+              Disconnect Local Browser Session
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>pai.video Web Account</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <StatusBadge label="Status" value={providerSettings?.paiVideoWebBrowser.loginStatus || "not_connected"} />
+          <div className="rounded-md border bg-muted/50 p-2 text-sm text-muted-foreground">
+            Enter your phone number and verification code on the pai.video page. The app will not collect or store your
+            code.
+          </div>
+          <Field label="Phone Number Hint">
+            <Input value={phoneHint} onChange={(event) => setPhoneHint(event.target.value)} placeholder="Optional local note only" />
+          </Field>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => runSettingsAction("pai-start", startPaiLogin)} disabled={loadingAction !== ""}>
+              Open pai.video Login
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() =>
+                runSettingsAction("pai-check", async () => {
+                  await apiRequest("/api/provider-settings/pai-video/check-login", { method: "POST" });
+                  await refreshProviderSettings();
+                  setNotice("pai.video login status checked.");
+                })
+              }
+              disabled={loadingAction !== ""}
+            >
+              Check Login Status
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() =>
+                runSettingsAction("pai-disconnect", async () => {
+                  await apiRequest("/api/provider-settings/pai-video/disconnect", { method: "POST" });
+                  await refreshProviderSettings();
+                  setNotice("pai.video local browser session disconnected.");
+                })
+              }
+              disabled={loadingAction !== ""}
+            >
+              Disconnect Local Browser Session
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Local Runtime</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2">
+          {settings
+            ? Object.entries(settings).map(([key, value]) => (
+                <div key={key} className="rounded-md border bg-white p-3">
+                  <div className="text-xs text-muted-foreground">{key}</div>
+                  <div className="mt-1 font-medium">{String(value)}</div>
+                </div>
+              ))
+            : null}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function StatusBadge({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border bg-white p-3 text-sm">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 font-medium">{value}</div>
+    </div>
   );
 }
 
