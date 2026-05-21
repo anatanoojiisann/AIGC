@@ -7,6 +7,7 @@ export type ApiErrorCode =
   | "UNSUPPORTED_VIDEO_FORMAT"
   | "FFMPEG_NOT_FOUND"
   | "PROCESSING_FAILED"
+  | "INVALID_API_KEY"
   | "INTERNAL_ERROR";
 
 type ApiErrorPayload = {

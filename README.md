@@ -11,6 +11,7 @@ Local Next.js App Router MVP for a PixVerse / Pai.video prompt and mock generati
 - Save reviewed prompt versions
 - Replace files before generation
 - Switch provider in the UI
+- Manage local provider source settings, PixVerse API key status, and manual web-login browser sessions
 - Create and retry mock generation jobs
 - Analyze HAR files with sensitive values redacted
 - Keep observed API capabilities disabled by default
@@ -24,6 +25,8 @@ Local Next.js App Router MVP for a PixVerse / Pai.video prompt and mock generati
 - `playwright_automation` is disabled by default.
 - This first version uses mock services only.
 - The app does not store cookies, session tokens, private credentials, or API keys.
+- PixVerse API keys, when saved locally, are stored only server-side under ignored local storage and are never returned raw to the frontend.
+- Web login opens official sites in local Playwright browser profiles under ignored storage. The app does not collect passwords, Google credentials, phone verification codes, cookies, or session tokens.
 - HAR analysis removes cookies, authorization headers, tokens, API keys, sessions, CSRF values, emails, phone numbers, and payment-like values.
 - The app must not bypass captcha, credits, payment, login protection, anti-bot systems, rate limits, or account restrictions.
 - Video Cleanup is only for videos you own, generated yourself, licensed content, or videos you have permission to edit.
@@ -75,6 +78,18 @@ npm run video:cleanup:test-fixture
 ```
 
 `video:watermark` remains as a compatibility alias for the cleanup CLI. The local UI is available at `/video-cleanup` and in the top navigation as `Video Cleanup`. It requires the confirmation checkbox before processing and writes outputs under `STORAGE_ROOT` without overwriting the original asset.
+
+## Provider Settings
+
+Provider Settings are available in the top navigation and at `/settings`.
+
+- Active source defaults to `mock`.
+- Supported source options are `mock`, `pixverse_official_api`, `pixverse_web_browser`, and `pai_video_web_browser`.
+- PixVerse official API key can be saved, tested, masked, and cleared. The raw key is never returned to the browser.
+- PixVerse web login opens PixVerse in a local Playwright browser session for manual email or Google login.
+- pai.video web login opens pai.video in a local Playwright browser session for manual phone verification.
+- Browser profiles are local only under `storage/browser-profiles/`.
+- This MVP does not add real PixVerse generation calls or private web API calls.
 
 ## Environment
 

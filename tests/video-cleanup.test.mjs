@@ -60,10 +60,10 @@ test("video cleanup CLI preview and delogo outputs are generated", async () => {
     const preview = path.join(directory, "preview.mp4");
     const delogo = path.join(directory, "delogo.mp4");
 
-    const previewResult = await run("npm", [
-      "run",
-      "video:cleanup",
-      "--",
+    const previewResult = await run("node", [
+      "--import",
+      "tsx",
+      "scripts/video-cleanup.ts",
       "--input",
       input,
       "--output",
@@ -82,10 +82,10 @@ test("video cleanup CLI preview and delogo outputs are generated", async () => {
     assert.match(previewResult.stdout, /"ok": true/);
     await assertFileGenerated(preview);
 
-    const delogoResult = await run("npm", [
-      "run",
-      "video:cleanup",
-      "--",
+    const delogoResult = await run("node", [
+      "--import",
+      "tsx",
+      "scripts/video-cleanup.ts",
       "--input",
       input,
       "--output",
@@ -112,11 +112,11 @@ test("video cleanup CLI missing input returns structured JSON", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "aigc-video-cleanup-missing-"));
   try {
     const result = await run(
-      "npm",
+      "node",
       [
-        "run",
-        "video:cleanup",
-        "--",
+        "--import",
+        "tsx",
+        "scripts/video-cleanup.ts",
         "--input",
         path.join(directory, "missing.mp4"),
         "--output",
@@ -149,10 +149,10 @@ test("video:watermark remains a compatibility alias", async () => {
     const input = await createFixtureVideo(directory);
     const output = path.join(directory, "alias-delogo.mp4");
 
-    const result = await run("npm", [
-      "run",
-      "video:watermark",
-      "--",
+    const result = await run("node", [
+      "--import",
+      "tsx",
+      "scripts/video-watermark.ts",
       "--input",
       input,
       "--output",

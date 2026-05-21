@@ -20,3 +20,9 @@ pnpm-debug.log*
 
 .npm-cache
 tsconfig.tsbuildinfo
+storage/config/provider-settings.json
+storage/config/provider-secrets.local.json
+storage/browser-profiles/**
+playwright/.auth/**
+*.har
+*.zip
