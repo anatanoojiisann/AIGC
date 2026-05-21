@@ -60,6 +60,22 @@ type Job = {
   scene?: { title: string };
 };
 
+type VideoCleanupJob = {
+  id: string;
+  projectId: string;
+  sourceAssetId: string;
+  outputAssetId: string | null;
+  mode: string;
+  region: string;
+  status: string;
+  errorMessage: string | null;
+  outputPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+  sourceAsset?: Asset;
+  outputAsset?: Asset | null;
+};
+
 type Scene = {
   id: string;
   title: string;
@@ -87,6 +103,7 @@ type Project = {
   scenes: Scene[];
   assets: Asset[];
   jobs: Job[];
+  cleanupJobs?: VideoCleanupJob[];
   updatedAt: string;
 };
 
@@ -111,7 +128,7 @@ type SettingsPayload = {
   redisConfigured: boolean;
 };
 
-type View = "projects" | "editor" | "settings" | "har" | "capabilities" | "jobs" | "watermark";
+type View = "projects" | "editor" | "settings" | "har" | "capabilities" | "jobs" | "cleanup";
 
 const emptyPrompt = {
   imagePrompt: "",
@@ -180,6 +197,7 @@ export default function Dashboard({
   const [selectedSceneId, setSelectedSceneId] = useState<string>("");
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [cleanupJobs, setCleanupJobs] = useState<VideoCleanupJob[]>([]);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [newProjectName, setNewProjectName] = useState("PixVerse Project");
   const [provider, setProvider] = useState("official_pixverse");
@@ -222,18 +240,21 @@ export default function Dashboard({
 
   const loadMeta = useCallback(async () => {
     try {
-      const [capabilityData, jobData, settingsData] = await Promise.all([
+      const [capabilityData, jobData, settingsData, cleanupJobData] = await Promise.all([
         apiRequest<{ capabilities: Capability[] }>("/api/capabilities"),
         apiRequest<{ jobs: Job[] }>("/api/jobs"),
-        apiRequest<{ settings: SettingsPayload }>("/api/settings")
+        apiRequest<{ settings: SettingsPayload }>("/api/settings"),
+        apiRequest<{ jobs: VideoCleanupJob[] }>("/api/video-cleanup/jobs")
       ]);
       setCapabilities(capabilityData.capabilities);
       setJobs(jobData.jobs);
       setSettings(settingsData.settings);
+      setCleanupJobs(cleanupJobData.jobs);
       setErrorMessage("");
     } catch (error) {
       setCapabilities([]);
       setJobs([]);
+      setCleanupJobs([]);
       setErrorMessage(errorText(error));
     }
   }, []);
@@ -463,7 +484,7 @@ export default function Dashboard({
               ["har", "HAR Analyzer"],
               ["capabilities", "Registry"],
               ["jobs", "Jobs"],
-              ["watermark", "Watermark Region"]
+              ["cleanup", "Video Cleanup"]
             ].map(([id, label]) => (
               <Button
                 key={id}
@@ -549,7 +570,14 @@ export default function Dashboard({
           <CapabilityRegistry capabilities={capabilities} updateCapability={updateCapability} />
         ) : null}
         {view === "jobs" ? <JobMonitor jobs={jobs} retryJob={retryJob} /> : null}
-        {view === "watermark" ? <WatermarkRegionTool /> : null}
+        {view === "cleanup" ? (
+          <VideoCleanupTool
+            project={project}
+            cleanupJobs={cleanupJobs}
+            reloadProject={loadProject}
+            reloadMeta={loadMeta}
+          />
+        ) : null}
       </section>
     </main>
   );
@@ -1018,43 +1046,108 @@ function JobRow({ job, retryJob }: { job: Job; retryJob: (jobId: string, provide
   );
 }
 
-function WatermarkRegionTool() {
-  const [video, setVideo] = useState<File | null>(null);
+function VideoCleanupTool({
+  project,
+  cleanupJobs,
+  reloadProject,
+  reloadMeta
+}: {
+  project: Project | null;
+  cleanupJobs: VideoCleanupJob[];
+  reloadProject: (id: string) => Promise<void>;
+  reloadMeta: () => Promise<void>;
+}) {
+  const videoAssets = useMemo(
+    () => project?.assets.filter((asset) => asset.type === "video" || asset.mime.startsWith("video/")) || [],
+    [project?.assets]
+  );
+  const projectCleanupJobs = useMemo(
+    () => cleanupJobs.filter((job) => job.projectId === project?.id),
+    [cleanupJobs, project?.id]
+  );
+  const [assetId, setAssetId] = useState("");
   const [mode, setMode] = useState("preview");
   const [x, setX] = useState(20);
   const [y, setY] = useState(20);
-  const [w, setW] = useState(160);
-  const [h, setH] = useState(60);
+  const [w, setW] = useState(80);
+  const [h, setH] = useState(30);
+  const [coverColor, setCoverColor] = useState("black@0.85");
+  const [confirmedRights, setConfirmedRights] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [outputPath, setOutputPath] = useState("");
+  const [outputAssetId, setOutputAssetId] = useState("");
   const [localError, setLocalError] = useState("");
 
+  useEffect(() => {
+    if (!assetId || !videoAssets.some((asset) => asset.id === assetId)) {
+      setAssetId(videoAssets[0]?.id || "");
+    }
+  }, [assetId, videoAssets]);
+
+  async function uploadVideo(files: FileList | null) {
+    const file = files?.[0];
+    if (!file || !project) return;
+
+    const form = new FormData();
+    form.append("files", file);
+    form.append("role", "video_cleanup_source");
+
+    try {
+      const data = await apiRequest<{ assets: Asset[] }>(`/api/projects/${project.id}/files`, {
+        method: "POST",
+        body: form
+      });
+      const uploadedVideo = data.assets.find((asset) => asset.type === "video" || asset.mime.startsWith("video/"));
+      if (uploadedVideo) setAssetId(uploadedVideo.id);
+      setLocalError("");
+      await reloadProject(project.id);
+    } catch (error) {
+      setLocalError(errorText(error));
+    }
+  }
+
   async function processVideo(nextMode = mode) {
-    if (!video) {
-      setLocalError("Upload a local video first.");
+    if (!project) {
+      setLocalError("Create or open a project first.");
+      return;
+    }
+    if (!assetId) {
+      setLocalError("Select or upload a local video asset first.");
+      return;
+    }
+    if (!confirmedRights) {
+      setLocalError("Confirm that you own this video or have permission to edit it before processing.");
       return;
     }
 
     setProcessing(true);
     setLocalError("");
     setOutputPath("");
-
-    const form = new FormData();
-    form.append("video", video);
-    form.append("mode", nextMode);
-    form.append("x", String(x));
-    form.append("y", String(y));
-    form.append("w", String(w));
-    form.append("h", String(h));
+    setOutputAssetId("");
 
     try {
       const data = await apiRequest<{
+        job: VideoCleanupJob;
+        outputAsset: Asset;
         result: {
           outputPath: string;
           relativeOutputPath: string;
         };
-      }>("/api/video/watermark", { method: "POST", body: form });
+      }>(nextMode === "preview" ? "/api/video-cleanup/preview" : "/api/video-cleanup/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          assetId,
+          mode: nextMode,
+          region: { x, y, w, h },
+          coverColor,
+          confirmedRights
+        })
+      });
       setOutputPath(data.result.relativeOutputPath || data.result.outputPath);
+      setOutputAssetId(data.outputAsset.id);
+      await Promise.all([reloadProject(project.id), reloadMeta()]);
     } catch (error) {
       setLocalError(errorText(error));
     } finally {
@@ -1062,37 +1155,75 @@ function WatermarkRegionTool() {
     }
   }
 
+  if (!project) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-sm text-muted-foreground">Create or open a project to use Video Cleanup.</CardContent>
+      </Card>
+    );
+  }
+
+  const selectedAsset = videoAssets.find((asset) => asset.id === assetId);
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
+    <div className="grid gap-4 xl:grid-cols-[360px_minmax(420px,1fr)_360px]">
       <Card>
         <CardHeader>
-          <CardTitle>Watermark Region</CardTitle>
+          <CardTitle>Video Asset</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-            Use this only for videos you own, licensed content, or videos where you accidentally added your own
-            watermark. It is not for bypassing third-party platform attribution.
+            Use Video Cleanup only for videos you own, generated yourself, or have permission to edit.
           </div>
-          <Field label="Local Video">
+          <Field label="Select Video">
+            <Select value={assetId} onChange={(event) => setAssetId(event.target.value)}>
+              <option value="">Select a video asset</option>
+              {videoAssets.map((asset) => (
+                <option key={asset.id} value={asset.id}>
+                  {asset.originalName}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Upload Local Video">
             <Label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border bg-background text-sm text-foreground">
               <Film className="h-4 w-4" />
-              {video ? video.name : "Upload Video"}
+              Upload Video
               <input
                 type="file"
                 accept="video/*"
                 className="hidden"
-                onChange={(event) => setVideo(event.target.files?.[0] || null)}
+                onChange={(event) => uploadVideo(event.target.files)}
               />
             </Label>
           </Field>
+          {selectedAsset ? (
+            <video src={`/api/assets/${selectedAsset.id}`} controls className="aspect-video w-full rounded-md border bg-black" />
+          ) : (
+            <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">No video asset selected.</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Region Controls</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
           <Field label="Mode">
             <Select value={mode} onChange={(event) => setMode(event.target.value)}>
               <option value="preview">preview</option>
-              <option value="crop">crop</option>
-              <option value="cover">cover</option>
               <option value="delogo">delogo</option>
+              <option value="blur">blur</option>
+              <option value="cover">cover</option>
+              <option value="crop">crop</option>
             </Select>
           </Field>
+          {mode === "cover" ? (
+            <Field label="Cover Color">
+              <Input value={coverColor} onChange={(event) => setCoverColor(event.target.value)} />
+            </Field>
+          ) : null}
           <div className="grid grid-cols-2 gap-3">
             <Field label="X">
               <Input type="number" min={1} value={x} onChange={(event) => setX(Number(event.target.value))} />
@@ -1107,9 +1238,18 @@ function WatermarkRegionTool() {
               <Input type="number" min={1} value={h} onChange={(event) => setH(Number(event.target.value))} />
             </Field>
           </div>
+          <Label className="flex items-start gap-2 rounded-md border bg-white p-3 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={confirmedRights}
+              onChange={(event) => setConfirmedRights(event.target.checked)}
+            />
+            <span>I confirm I own this video or have permission to edit it.</span>
+          </Label>
           <div className="grid gap-2 sm:grid-cols-2">
             <Button variant="outline" onClick={() => processVideo("preview")} disabled={processing}>
-              Generate Preview
+              Run Preview
             </Button>
             <Button onClick={() => processVideo(mode)} disabled={processing}>
               Process Video
@@ -1120,7 +1260,7 @@ function WatermarkRegionTool() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Output</CardTitle>
+          <CardTitle>Status</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           {localError ? (
@@ -1139,6 +1279,30 @@ function WatermarkRegionTool() {
               Generated preview or processed video path will appear here.
             </div>
           )}
+          {outputAssetId ? (
+            <div className="space-y-2">
+              <video src={`/api/assets/${outputAssetId}`} controls className="aspect-video w-full rounded-md border bg-black" />
+              <Button asChild variant="outline" className="w-full">
+                <a href={`/api/assets/${outputAssetId}`} download>
+                  <Download className="h-4 w-4" />
+                  Download Output
+                </a>
+              </Button>
+            </div>
+          ) : null}
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Job Log</div>
+            {projectCleanupJobs.slice(0, 6).map((job) => (
+              <div key={job.id} className="rounded-md border bg-white p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{job.mode}</span>
+                  <span className="rounded-sm bg-muted px-2 py-1">{job.status}</span>
+                </div>
+                <div className="mt-1 truncate text-muted-foreground">{job.outputPath || job.id}</div>
+                {job.errorMessage ? <div className="mt-1 text-destructive">{job.errorMessage}</div> : null}
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
     </div>

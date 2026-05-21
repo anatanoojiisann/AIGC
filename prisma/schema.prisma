@@ -21,6 +21,7 @@ model Project {
   scenes      Scene[]
   assets      Asset[]
   jobs        GenerationJob[]
+  cleanupJobs VideoCleanupJob[]
 }
 
 model Scene {
@@ -57,6 +58,8 @@ model Asset {
   size         Int
   path         String
   createdAt    DateTime @default(now())
+  cleanupSourceJobs VideoCleanupJob[] @relation("VideoCleanupSourceAsset")
+  cleanupOutputJobs VideoCleanupJob[] @relation("VideoCleanupOutputAsset")
 }
 
 model PromptVersion {
@@ -114,4 +117,21 @@ model AppSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+model VideoCleanupJob {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceAssetId String
+  sourceAsset   Asset    @relation("VideoCleanupSourceAsset", fields: [sourceAssetId], references: [id], onDelete: Cascade)
+  outputAssetId String?
+  outputAsset   Asset?   @relation("VideoCleanupOutputAsset", fields: [outputAssetId], references: [id], onDelete: SetNull)
+  mode          String
+  region        String
+  status        String   @default("queued")
+  errorMessage  String?
+  outputPath    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }

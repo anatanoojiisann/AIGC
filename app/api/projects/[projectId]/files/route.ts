@@ -26,7 +26,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
           projectId,
           sceneId,
           role,
-          type: file.type.startsWith("image/") ? "image" : "file",
+          type: file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : "file",
           filename: saved.filename,
           originalName: saved.originalName,
           mime: saved.mime,

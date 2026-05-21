@@ -16,7 +16,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
           jobs: { orderBy: { createdAt: "desc" } }
         }
       },
-      jobs: { orderBy: { createdAt: "desc" } }
+      jobs: { orderBy: { createdAt: "desc" } },
+      cleanupJobs: { orderBy: { createdAt: "desc" } }
     }
   });
   if (!project) return Response.json({ error: "Project not found." }, { status: 404 });

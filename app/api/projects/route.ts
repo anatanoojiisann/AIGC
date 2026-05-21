@@ -8,7 +8,7 @@ export async function GET() {
     await ensureDefaultCapabilities();
     const projects = await prisma.project.findMany({
       orderBy: { updatedAt: "desc" },
-      include: { scenes: true, assets: true, jobs: true }
+      include: { scenes: true, assets: true, jobs: true, cleanupJobs: true }
     });
     return okJson({ projects });
   } catch (error) {
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
 
       return tx.project.findUniqueOrThrow({
         where: { id: project.id },
-        include: { scenes: true, assets: true, jobs: true }
+        include: { scenes: true, assets: true, jobs: true, cleanupJobs: true }
       });
     });
 

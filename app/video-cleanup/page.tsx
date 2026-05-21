@@ -1,5 +1,5 @@
 import Dashboard from "@/app/dashboard";
 
-export default function WatermarkPage() {
+export default function VideoCleanupPage() {
   return <Dashboard initialView="cleanup" />;
 }

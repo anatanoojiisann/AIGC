@@ -1,7 +1,7 @@
 import { access, mkdir, readFile, stat, writeFile } from "fs/promises";
 import path from "path";
 
-function storageRoot() {
+export function storageRoot() {
   return path.resolve(process.cwd(), process.env.STORAGE_ROOT || "./storage");
 }
 
@@ -12,7 +12,7 @@ function assertSafeSegment(value: string, label: string) {
   return value;
 }
 
-function assertUnderStorage(absPath: string) {
+export function assertUnderStorage(absPath: string) {
   const root = storageRoot();
   const resolved = path.resolve(absPath);
   const relative = path.relative(root, resolved);
@@ -53,6 +53,42 @@ export async function saveUpload(projectId: string, file: File) {
     size: buffer.length,
     path: absPath
   };
+}
+
+export async function createProjectStorageFilePath(projectId: string, folder: string, filename: string) {
+  const safeFolder = assertSafeSegment(folder, "folder");
+  const safeName = safeFileName(filename);
+  const directory = assertUnderStorage(path.join(projectStoragePath(projectId), safeFolder));
+  await mkdir(directory, { recursive: true });
+  return assertUnderStorage(path.join(directory, safeName));
+}
+
+export async function createVideoCleanupOutputPath(projectId: string, jobId: string, filename = "output.mp4") {
+  const directory = assertUnderStorage(
+    path.join(
+      projectStoragePath(projectId),
+      "video-cleanup",
+      assertSafeSegment(jobId, "video cleanup job id")
+    )
+  );
+  await mkdir(directory, { recursive: true });
+  return assertUnderStorage(path.join(directory, safeFileName(filename)));
+}
+
+export async function storedFileInfo(absPath: string) {
+  const resolved = assertUnderStorage(absPath);
+  const info = await stat(resolved);
+  if (!info.isFile()) {
+    throw new Error("Stored path is not a file.");
+  }
+  return {
+    path: resolved,
+    size: info.size
+  };
+}
+
+export function storageRelativePath(absPath: string) {
+  return path.relative(process.cwd(), assertUnderStorage(absPath));
 }
 
 export async function readStoredFile(absPath: string) {
