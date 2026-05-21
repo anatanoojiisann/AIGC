@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Download,
   FileJson,
+  Film,
   FolderPlus,
   ImagePlus,
   Play,
@@ -110,7 +111,7 @@ type SettingsPayload = {
   redisConfigured: boolean;
 };
 
-type View = "projects" | "editor" | "settings" | "har" | "capabilities" | "jobs";
+type View = "projects" | "editor" | "settings" | "har" | "capabilities" | "jobs" | "watermark";
 
 const emptyPrompt = {
   imagePrompt: "",
@@ -461,7 +462,8 @@ export default function Dashboard({
               ["settings", "Provider Settings"],
               ["har", "HAR Analyzer"],
               ["capabilities", "Registry"],
-              ["jobs", "Jobs"]
+              ["jobs", "Jobs"],
+              ["watermark", "Watermark Region"]
             ].map(([id, label]) => (
               <Button
                 key={id}
@@ -547,6 +549,7 @@ export default function Dashboard({
           <CapabilityRegistry capabilities={capabilities} updateCapability={updateCapability} />
         ) : null}
         {view === "jobs" ? <JobMonitor jobs={jobs} retryJob={retryJob} /> : null}
+        {view === "watermark" ? <WatermarkRegionTool /> : null}
       </section>
     </main>
   );
@@ -1011,6 +1014,133 @@ function JobRow({ job, retryJob }: { job: Job; retryJob: (jobId: string, provide
           Official
         </Button>
       </div>
+    </div>
+  );
+}
+
+function WatermarkRegionTool() {
+  const [video, setVideo] = useState<File | null>(null);
+  const [mode, setMode] = useState("preview");
+  const [x, setX] = useState(20);
+  const [y, setY] = useState(20);
+  const [w, setW] = useState(160);
+  const [h, setH] = useState(60);
+  const [processing, setProcessing] = useState(false);
+  const [outputPath, setOutputPath] = useState("");
+  const [localError, setLocalError] = useState("");
+
+  async function processVideo(nextMode = mode) {
+    if (!video) {
+      setLocalError("Upload a local video first.");
+      return;
+    }
+
+    setProcessing(true);
+    setLocalError("");
+    setOutputPath("");
+
+    const form = new FormData();
+    form.append("video", video);
+    form.append("mode", nextMode);
+    form.append("x", String(x));
+    form.append("y", String(y));
+    form.append("w", String(w));
+    form.append("h", String(h));
+
+    try {
+      const data = await apiRequest<{
+        result: {
+          outputPath: string;
+          relativeOutputPath: string;
+        };
+      }>("/api/video/watermark", { method: "POST", body: form });
+      setOutputPath(data.result.relativeOutputPath || data.result.outputPath);
+    } catch (error) {
+      setLocalError(errorText(error));
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[360px_1fr]">
+      <Card>
+        <CardHeader>
+          <CardTitle>Watermark Region</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+            Use this only for videos you own, licensed content, or videos where you accidentally added your own
+            watermark. It is not for bypassing third-party platform attribution.
+          </div>
+          <Field label="Local Video">
+            <Label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border bg-background text-sm text-foreground">
+              <Film className="h-4 w-4" />
+              {video ? video.name : "Upload Video"}
+              <input
+                type="file"
+                accept="video/*"
+                className="hidden"
+                onChange={(event) => setVideo(event.target.files?.[0] || null)}
+              />
+            </Label>
+          </Field>
+          <Field label="Mode">
+            <Select value={mode} onChange={(event) => setMode(event.target.value)}>
+              <option value="preview">preview</option>
+              <option value="crop">crop</option>
+              <option value="cover">cover</option>
+              <option value="delogo">delogo</option>
+            </Select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="X">
+              <Input type="number" min={1} value={x} onChange={(event) => setX(Number(event.target.value))} />
+            </Field>
+            <Field label="Y">
+              <Input type="number" min={1} value={y} onChange={(event) => setY(Number(event.target.value))} />
+            </Field>
+            <Field label="W">
+              <Input type="number" min={1} value={w} onChange={(event) => setW(Number(event.target.value))} />
+            </Field>
+            <Field label="H">
+              <Input type="number" min={1} value={h} onChange={(event) => setH(Number(event.target.value))} />
+            </Field>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Button variant="outline" onClick={() => processVideo("preview")} disabled={processing}>
+              Generate Preview
+            </Button>
+            <Button onClick={() => processVideo(mode)} disabled={processing}>
+              Process Video
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Output</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {localError ? (
+            <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
+              <AlertTriangle className="h-4 w-4" />
+              {localError}
+            </div>
+          ) : null}
+          {outputPath ? (
+            <div className="rounded-md border bg-white p-3 text-sm">
+              <div className="text-xs text-muted-foreground">Generated file</div>
+              <div className="mt-1 break-all font-medium">{outputPath}</div>
+            </div>
+          ) : (
+            <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
+              Generated preview or processed video path will appear here.
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

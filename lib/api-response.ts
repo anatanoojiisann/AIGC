@@ -1,4 +1,13 @@
-export type ApiErrorCode = "VALIDATION_ERROR" | "DATABASE_ERROR" | "BAD_REQUEST" | "INTERNAL_ERROR";
+export type ApiErrorCode =
+  | "VALIDATION_ERROR"
+  | "DATABASE_ERROR"
+  | "BAD_REQUEST"
+  | "INPUT_NOT_FOUND"
+  | "INVALID_COORDINATES"
+  | "UNSUPPORTED_VIDEO_FORMAT"
+  | "FFMPEG_NOT_FOUND"
+  | "PROCESSING_FAILED"
+  | "INTERNAL_ERROR";
 
 type ApiErrorPayload = {
   ok: false;
