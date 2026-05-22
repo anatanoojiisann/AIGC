@@ -7,6 +7,7 @@ import {
   runVideoCleanupJob,
   VideoCleanupError,
   type VideoCleanupMode,
+  type ProPainterQuality,
   type VideoCleanupRegion,
   type VideoMetadata
 } from "@/lib/video/ffmpeg";
@@ -40,6 +41,9 @@ export type CleanupOutputRecord = {
   outputSha256: string;
   hashesDifferent: boolean;
   ffmpegFilter: string;
+  engine: "FFmpeg" | "ProPainter";
+  quality?: ProPainterQuality;
+  maskPath?: string;
   createdAt: string;
 };
 
@@ -213,12 +217,14 @@ export async function runUploadedVideoCleanup({
   uploadedVideoId,
   mode,
   region,
-  coverColor
+  coverColor,
+  quality
 }: {
   uploadedVideoId: string;
   mode: VideoCleanupMode;
   region: VideoCleanupRegion;
   coverColor?: string;
+  quality?: ProPainterQuality;
 }) {
   await ensureCleanupDirs();
   const uploaded = await getUploadedCleanupVideo(uploadedVideoId);
@@ -254,7 +260,8 @@ export async function runUploadedVideoCleanup({
       y: region.y,
       w: region.w,
       h: region.h,
-      coverColor
+      coverColor,
+      quality
     });
 
     const size = await assertNonEmptyFile(outputPath);
@@ -277,6 +284,9 @@ export async function runUploadedVideoCleanup({
       outputSha256,
       hashesDifferent: inputSha256 !== outputSha256,
       ffmpegFilter: result.filter,
+      engine: result.engine,
+      quality: result.quality,
+      maskPath: result.maskPath ? storageRelativePath(result.maskPath) : undefined,
       createdAt: new Date().toISOString()
     };
     await writeJson(outputRecordPath(outputId), outputRecord);

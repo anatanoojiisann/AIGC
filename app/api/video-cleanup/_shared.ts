@@ -12,6 +12,7 @@ import {
   VideoCleanupError,
   VIDEO_CLEANUP_MODES,
   type VideoCleanupMode,
+  type ProPainterQuality,
   type VideoCleanupRegion
 } from "@/lib/video/ffmpeg";
 import {
@@ -28,6 +29,7 @@ type CleanupBody = {
   region?: Partial<VideoCleanupRegion>;
   confirmedRights?: boolean;
   coverColor?: string;
+  quality?: string;
 };
 
 export function cleanupErrorResponse(error: unknown) {
@@ -37,9 +39,11 @@ export function cleanupErrorResponse(error: unknown) {
         ? 404
         : error.code === "FFMPEG_NOT_FOUND"
           ? 503
-          : error.code === "PROCESSING_FAILED"
-            ? 500
-            : 400;
+          : error.code === "PROPAINTER_NOT_INSTALLED"
+            ? 503
+            : error.code === "PROCESSING_FAILED"
+              ? 500
+              : 400;
     return errorJson(error.code as ApiErrorCode, error.message, status);
   }
 
@@ -85,7 +89,8 @@ export async function runUploadedCleanup(body: CleanupBody, defaultMode?: VideoC
     uploadedVideoId,
     mode,
     region,
-    coverColor: body.coverColor
+    coverColor: body.coverColor,
+    quality: body.quality as ProPainterQuality | undefined
   });
 
   return {
@@ -103,7 +108,10 @@ export async function runUploadedCleanup(body: CleanupBody, defaultMode?: VideoC
     outputPath: storageRelativePath(data.result.output),
     inputSha256: data.output.inputSha256,
     outputSha256: data.output.outputSha256,
-    hashesDifferent: data.output.hashesDifferent
+    hashesDifferent: data.output.hashesDifferent,
+    engine: data.output.engine,
+    quality: data.output.quality,
+    maskPath: data.output.maskPath
   };
 }
 
@@ -160,7 +168,8 @@ export async function runAssetCleanup(body: CleanupBody, defaultMode?: VideoClea
       y: region.y,
       w: region.w,
       h: region.h,
-      coverColor: body.coverColor
+      coverColor: body.coverColor,
+      quality: body.quality as ProPainterQuality | undefined
     });
     const info = await storedFileInfo(outputPath);
     const outputAsset = await prisma.asset.create({

@@ -2,9 +2,11 @@ import { access, mkdir, stat } from "fs/promises";
 import path from "path";
 import { spawn } from "child_process";
 
-export const VIDEO_CLEANUP_MODES = ["preview", "delogo", "blur", "cover", "crop"] as const;
+export const VIDEO_CLEANUP_MODES = ["preview", "delogo", "blur", "cover", "crop", "ai-inpaint-propainter"] as const;
+export const PROPAINTER_QUALITIES = ["fast", "balanced", "high"] as const;
 
 export type VideoCleanupMode = (typeof VIDEO_CLEANUP_MODES)[number];
+export type ProPainterQuality = (typeof PROPAINTER_QUALITIES)[number];
 
 export type VideoCleanupRegion = {
   x: number;
@@ -25,6 +27,7 @@ export type VideoCleanupOptions = VideoCleanupRegion & {
   mode: VideoCleanupMode;
   coverColor?: string;
   dryRun?: boolean;
+  quality?: ProPainterQuality;
 };
 
 export type VideoCleanupResult = {
@@ -34,9 +37,12 @@ export type VideoCleanupResult = {
   region: VideoCleanupRegion;
   video?: VideoMetadata;
   filter: string;
-  command: "ffmpeg";
+  command: "ffmpeg" | "propainter";
   args: string[];
   dryRun: boolean;
+  engine: "FFmpeg" | "ProPainter";
+  quality?: ProPainterQuality;
+  maskPath?: string;
 };
 
 export class VideoCleanupError extends Error {
@@ -54,6 +60,13 @@ export class VideoCleanupError extends Error {
 const supportedExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
 
 function commandMissing(command: string) {
+  if (command !== "ffmpeg" && command !== "ffprobe") {
+    return new VideoCleanupError(
+      "PROPAINTER_NOT_INSTALLED",
+      "ProPainter is not installed or its Python environment is unavailable. Set PROPAINTER_ENABLED=true, PROPAINTER_REPO_PATH, and PROPAINTER_PYTHON."
+    );
+  }
+
   const label = command === "ffprobe" ? "FFprobe" : "FFmpeg";
   return new VideoCleanupError(
     "FFMPEG_NOT_FOUND",
@@ -61,9 +74,9 @@ function commandMissing(command: string) {
   );
 }
 
-function runCommand(command: string, args: string[]) {
+function runCommand(command: string, args: string[], options: { cwd?: string } = {}) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true });
+    const child = spawn(command, args, { cwd: options.cwd, windowsHide: true });
     let stdout = "";
     let stderr = "";
 
@@ -87,10 +100,16 @@ function runCommand(command: string, args: string[]) {
       }
       reject(
         new VideoCleanupError(
-          command === "ffprobe" ? "UNSUPPORTED_VIDEO_FORMAT" : "PROCESSING_FAILED",
+          command === "ffprobe"
+            ? "UNSUPPORTED_VIDEO_FORMAT"
+            : command === "ffmpeg"
+              ? "PROCESSING_FAILED"
+              : "PROPAINTER_NOT_INSTALLED",
           command === "ffprobe"
             ? "Unsupported video format or unreadable video stream."
-            : `FFmpeg processing failed with exit code ${code}.`,
+            : command === "ffmpeg"
+              ? `FFmpeg processing failed with exit code ${code}.`
+              : "ProPainter processing could not run. Check the local ProPainter setup.",
           { stderr: stderr.trim() }
         )
       );
@@ -125,6 +144,14 @@ function normalizeRegion(options: Pick<VideoCleanupOptions, "x" | "y" | "w" | "h
     w: positiveInteger(options.w, "w"),
     h: positiveInteger(options.h, "h")
   };
+}
+
+function normalizeQuality(value: unknown): ProPainterQuality {
+  const quality = String(value || "balanced").toLowerCase();
+  if (!PROPAINTER_QUALITIES.includes(quality as ProPainterQuality)) {
+    throw new VideoCleanupError("VALIDATION_ERROR", "quality must be fast, balanced, or high.");
+  }
+  return quality as ProPainterQuality;
 }
 
 async function assertInputVideo(inputPath: string) {
@@ -244,6 +271,10 @@ export function buildVideoCleanupFilter({
   video: VideoMetadata;
   coverColor?: string;
 }) {
+  if (mode === "ai-inpaint-propainter") {
+    throw new VideoCleanupError("PROPAINTER_NOT_INSTALLED", "ProPainter mode requires the optional ProPainter worker.");
+  }
+
   if (mode === "preview") {
     return {
       type: "vf" as const,
@@ -313,6 +344,106 @@ function buildArgs(input: string, output: string, mode: VideoCleanupMode, region
   return { args, filter: filter.value };
 }
 
+function propainterNotInstalled(message?: string) {
+  return new VideoCleanupError(
+    "PROPAINTER_NOT_INSTALLED",
+    message ||
+      "ProPainter is not installed or enabled. Set PROPAINTER_ENABLED=true, PROPAINTER_REPO_PATH, and PROPAINTER_PYTHON to use AI Inpaint - ProPainter."
+  );
+}
+
+async function assertDirectory(directory: string) {
+  try {
+    const info = await stat(directory);
+    if (!info.isDirectory()) throw propainterNotInstalled("PROPAINTER_REPO_PATH must point to a local ProPainter directory.");
+  } catch (error) {
+    if (error instanceof VideoCleanupError) throw error;
+    throw propainterNotInstalled("PROPAINTER_REPO_PATH does not exist or is not readable.");
+  }
+}
+
+async function firstExistingFile(candidates: string[]) {
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate);
+      if (info.isFile()) return candidate;
+    } catch {
+      // Try the next common ProPainter entrypoint.
+    }
+  }
+  throw propainterNotInstalled("Could not find a ProPainter inference script in PROPAINTER_REPO_PATH.");
+}
+
+async function createPropainterMask(maskPath: string, region: VideoCleanupRegion, video: VideoMetadata) {
+  await runCommand("ffmpeg", [
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    `color=black:s=${video.width}x${video.height}`,
+    "-frames:v",
+    "1",
+    "-vf",
+    `drawbox=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:color=white:t=fill`,
+    maskPath
+  ]);
+}
+
+async function runPropainterInpaint({
+  input,
+  output,
+  region,
+  video,
+  quality,
+  dryRun
+}: {
+  input: string;
+  output: string;
+  region: VideoCleanupRegion;
+  video: VideoMetadata;
+  quality: ProPainterQuality;
+  dryRun: boolean;
+}) {
+  if (process.env.PROPAINTER_ENABLED !== "true") {
+    throw propainterNotInstalled();
+  }
+
+  const repoPath = process.env.PROPAINTER_REPO_PATH?.trim();
+  if (!repoPath) {
+    throw propainterNotInstalled("PROPAINTER_REPO_PATH is required for AI Inpaint - ProPainter.");
+  }
+
+  const python = process.env.PROPAINTER_PYTHON?.trim() || "python";
+  const resolvedRepoPath = path.resolve(process.cwd(), repoPath);
+  await assertDirectory(resolvedRepoPath);
+  const script = await firstExistingFile([
+    path.join(resolvedRepoPath, "inference_propainter.py"),
+    path.join(resolvedRepoPath, "inference", "propainter.py"),
+    path.join(resolvedRepoPath, "scripts", "inference_propainter.py")
+  ]);
+
+  const maskPath = path.join(path.dirname(output), `${path.basename(output, path.extname(output))}-mask.png`);
+  const filter = `propainter-mask=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:quality=${quality}`;
+  const args = [
+    script,
+    "--video",
+    input,
+    "--mask",
+    maskPath,
+    "--output",
+    output,
+    "--quality",
+    quality
+  ];
+
+  if (!dryRun) {
+    await createPropainterMask(maskPath, region, video);
+    await runCommand(python, args, { cwd: resolvedRepoPath });
+  }
+
+  return { args, filter, maskPath };
+}
+
 export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<VideoCleanupResult> {
   const input = absolutePath(options.input, "input");
   const output = absolutePath(options.output, "output");
@@ -332,6 +463,33 @@ export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<
   const video = await getVideoMetadata(input);
   validateRegion(region, video);
 
+  if (mode === "ai-inpaint-propainter") {
+    const quality = normalizeQuality(options.quality);
+    const { args, filter, maskPath } = await runPropainterInpaint({
+      input,
+      output,
+      region,
+      video,
+      quality,
+      dryRun: Boolean(options.dryRun)
+    });
+
+    return {
+      input,
+      output,
+      mode,
+      region,
+      video,
+      filter,
+      command: "propainter",
+      args,
+      dryRun: Boolean(options.dryRun),
+      engine: "ProPainter",
+      quality,
+      maskPath
+    };
+  }
+
   const { args, filter } = buildArgs(input, output, mode, region, video, options.coverColor);
   if (!options.dryRun) {
     await runCommand("ffmpeg", args);
@@ -346,6 +504,7 @@ export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<
     filter,
     command: "ffmpeg",
     args,
-    dryRun: Boolean(options.dryRun)
+    dryRun: Boolean(options.dryRun),
+    engine: "FFmpeg"
   };
 }

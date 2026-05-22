@@ -10,11 +10,12 @@ type CliArgs = {
   h?: string;
   coverColor?: string;
   dryRun?: boolean;
+  quality?: string;
 };
 
 function readArgs(argv: string[]) {
   const args: CliArgs = {};
-  const allowed = new Set(["input", "output", "mode", "x", "y", "w", "h", "coverColor", "dryRun"]);
+  const allowed = new Set(["input", "output", "mode", "x", "y", "w", "h", "coverColor", "dryRun", "quality"]);
 
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
@@ -67,7 +68,8 @@ async function main() {
     w: requiredNumber(args, "w"),
     h: requiredNumber(args, "h"),
     coverColor: args.coverColor,
-    dryRun: Boolean(args.dryRun)
+    dryRun: Boolean(args.dryRun),
+    quality: args.quality as never
   });
 
   process.stdout.write(
@@ -80,7 +82,10 @@ async function main() {
           mode: result.mode,
           region: result.region,
           filter: result.filter,
-          dryRun: result.dryRun
+          dryRun: result.dryRun,
+          engine: result.engine,
+          quality: result.quality,
+          maskPath: result.maskPath
         }
       },
       null,

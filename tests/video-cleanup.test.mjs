@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true });
+    const child = spawn(command, args, { env: { ...process.env, ...options.env }, windowsHide: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -103,6 +103,55 @@ test("video cleanup CLI preview and delogo outputs are generated", async () => {
     ]);
     assert.match(delogoResult.stdout, /"ok": true/);
     await assertFileGenerated(delogo);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("video cleanup CLI ProPainter mode returns clean setup error when disabled", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "aigc-video-propainter-disabled-"));
+  try {
+    const input = await createFixtureVideo(directory);
+    const output = path.join(directory, "propainter.mp4");
+
+    const result = await run(
+      "node",
+      [
+        "--import",
+        "tsx",
+        "scripts/video-cleanup.ts",
+        "--input",
+        input,
+        "--output",
+        output,
+        "--mode",
+        "ai-inpaint-propainter",
+        "--x",
+        "20",
+        "--y",
+        "20",
+        "--w",
+        "80",
+        "--h",
+        "30",
+        "--quality",
+        "balanced"
+      ],
+      {
+        allowFailure: true,
+        env: {
+          PROPAINTER_ENABLED: "false",
+          PROPAINTER_REPO_PATH: "",
+          PROPAINTER_PYTHON: ""
+        }
+      }
+    );
+
+    assert.notEqual(result.code, 0);
+    const payload = JSON.parse(result.stderr);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error.code, "PROPAINTER_NOT_INSTALLED");
+    assert.doesNotMatch(result.stderr, /\n\s+at\s/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

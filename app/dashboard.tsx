@@ -107,6 +107,9 @@ type CleanupProcessResult = {
   inputSha256: string;
   outputSha256: string;
   hashesDifferent: boolean;
+  engine?: string;
+  quality?: "fast" | "balanced" | "high";
+  maskPath?: string;
 };
 
 type Scene = {
@@ -1458,6 +1461,7 @@ function JobRow({ job, retryJob }: { job: Job; retryJob: (jobId: string, provide
 function VideoCleanupTool() {
   const [uploadedVideo, setUploadedVideo] = useState<UploadedCleanupVideo | null>(null);
   const [mode, setMode] = useState("preview");
+  const [quality, setQuality] = useState<"fast" | "balanced" | "high">("balanced");
   const [x, setX] = useState(20);
   const [y, setY] = useState(20);
   const [w, setW] = useState(80);
@@ -1542,7 +1546,8 @@ function VideoCleanupTool() {
             uploadedVideoId: uploadedVideo?.uploadedVideoId,
             mode: nextMode,
             region: { x, y, w, h },
-            coverColor
+            coverColor,
+            quality: nextMode === "ai-inpaint-propainter" ? quality : undefined
           })
         }
       );
@@ -1624,6 +1629,7 @@ function VideoCleanupTool() {
                 <option value="blur">blur</option>
                 <option value="cover">cover</option>
                 <option value="crop">crop</option>
+                <option value="ai-inpaint-propainter">AI Inpaint - ProPainter</option>
               </Select>
             </Field>
             <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
@@ -1633,6 +1639,33 @@ function VideoCleanupTool() {
               <Field label="Cover Color">
                 <Input value={coverColor} onChange={(event) => setCoverColor(event.target.value)} />
               </Field>
+            ) : null}
+            {mode === "ai-inpaint-propainter" ? (
+              <div className="space-y-3">
+                <Field label="ProPainter Quality">
+                  <Select value={quality} onChange={(event) => setQuality(event.target.value as typeof quality)}>
+                    <option value="fast">fast</option>
+                    <option value="balanced">balanced</option>
+                    <option value="high">high</option>
+                  </Select>
+                </Field>
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                  AI Inpaint - ProPainter is optional and requires a local ProPainter setup. If it is not installed,
+                  processing returns a clear setup error and the other modes continue to work.
+                </div>
+                <div className="rounded-md border bg-white p-3 text-xs text-muted-foreground">
+                  <div className="font-medium text-foreground">Local setup after optional shell checks pass</div>
+                  <pre className="mt-2 overflow-auto rounded bg-slate-950 p-2 text-[11px] text-slate-50">
+                    {`PROPAINTER_ENABLED=true
+PROPAINTER_REPO_PATH=/Users/steven-mac2/Documents/ProPainter
+PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python`}
+                  </pre>
+                  <div className="mt-2">
+                    Install Conda, clone ProPainter, create the propainter env, install requirements, download weights,
+                    then restart the app. See workers/propainter/README.md.
+                  </div>
+                </div>
+              </div>
             ) : null}
           </div>
           <div className="space-y-4">
@@ -1790,6 +1823,9 @@ function VideoCleanupTool() {
               <div className="break-all">input sha256: {output.inputSha256}</div>
               <div className="break-all">output sha256: {output.outputSha256}</div>
               <div>hashes different: {String(output.hashesDifferent)}</div>
+              {output.engine ? <div>engine: {output.engine}</div> : null}
+              {output.quality ? <div>quality: {output.quality}</div> : null}
+              {output.maskPath ? <div className="break-all">mask: {output.maskPath}</div> : null}
             </div>
           ) : null}
         </VideoPreviewCard>
