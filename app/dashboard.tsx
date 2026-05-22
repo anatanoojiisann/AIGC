@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -101,6 +101,12 @@ type CleanupProcessResult = {
     height: number;
     duration?: number;
   };
+  ffmpegFilter: string;
+  inputPath: string;
+  outputPath: string;
+  inputSha256: string;
+  outputSha256: string;
+  hashesDifferent: boolean;
 };
 
 type Scene = {
@@ -190,6 +196,15 @@ const emptyPrompt = {
   pixverseVideoPrompt: "",
   motionCameraActionPrompt: ""
 };
+
+const defaultWatermarkRatios = {
+  x: 0.745,
+  y: 0.863,
+  w: 0.228,
+  h: 0.115
+};
+
+type CleanupRegion = { x: number; y: number; w: number; h: number };
 
 type ApiEnvelope<T> =
   | { ok: true; data: T }
@@ -1479,6 +1494,11 @@ function VideoCleanupTool() {
         body: form
       });
       setUploadedVideo(data);
+      const defaultRegion = ratiosToRegion(defaultWatermarkRatios, data.width, data.height);
+      setX(defaultRegion.x);
+      setY(defaultRegion.y);
+      setW(defaultRegion.w);
+      setH(defaultRegion.h);
       setStatus("ready");
     } catch (error) {
       setStatus("error");
@@ -1571,6 +1591,8 @@ function VideoCleanupTool() {
 
   const actionsDisabled = processing || !uploadedVideo || status === "uploading";
   const outputTitle = output?.mode === "preview" ? "Preview Output" : "Processed Output";
+  const region = { x, y, w, h };
+  const ratios = uploadedVideo ? regionToRatios(region, uploadedVideo.width, uploadedVideo.height) : defaultWatermarkRatios;
 
   return (
     <div className="space-y-4">
@@ -1599,10 +1621,14 @@ function VideoCleanupTool() {
               <Select value={mode} onChange={(event) => setMode(event.target.value)}>
                 <option value="preview">preview</option>
                 <option value="delogo">delogo</option>
+                <option value="blur">blur</option>
                 <option value="cover">cover</option>
                 <option value="crop">crop</option>
               </Select>
             </Field>
+            <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
+              Use Preview mode first to confirm the selected box covers the watermark.
+            </div>
             {mode === "cover" ? (
               <Field label="Cover Color">
                 <Input value={coverColor} onChange={(event) => setCoverColor(event.target.value)} />
@@ -1612,17 +1638,46 @@ function VideoCleanupTool() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <Field label="X">
-                <Input type="number" min={1} value={x} onChange={(event) => setX(Number(event.target.value))} />
+                <Input
+                  type="number"
+                  min={1}
+                  value={x}
+                  onChange={(event) => setX(clampRegionNumber(Number(event.target.value), uploadedVideo?.width))}
+                />
               </Field>
               <Field label="Y">
-                <Input type="number" min={1} value={y} onChange={(event) => setY(Number(event.target.value))} />
+                <Input
+                  type="number"
+                  min={1}
+                  value={y}
+                  onChange={(event) => setY(clampRegionNumber(Number(event.target.value), uploadedVideo?.height))}
+                />
               </Field>
               <Field label="W">
-                <Input type="number" min={1} value={w} onChange={(event) => setW(Number(event.target.value))} />
+                <Input
+                  type="number"
+                  min={1}
+                  value={w}
+                  onChange={(event) => setW(clampRegionNumber(Number(event.target.value), uploadedVideo?.width))}
+                />
               </Field>
               <Field label="H">
-                <Input type="number" min={1} value={h} onChange={(event) => setH(Number(event.target.value))} />
+                <Input
+                  type="number"
+                  min={1}
+                  value={h}
+                  onChange={(event) => setH(clampRegionNumber(Number(event.target.value), uploadedVideo?.height))}
+                />
               </Field>
+            </div>
+            <div className="rounded-md border bg-white p-3 text-xs text-muted-foreground">
+              <div className="font-medium text-foreground">Relative position</div>
+              <div className="mt-1 grid grid-cols-2 gap-1">
+                <span>x: {formatPercent(ratios.x)}</span>
+                <span>y: {formatPercent(ratios.y)}</span>
+                <span>w: {formatPercent(ratios.w)}</span>
+                <span>h: {formatPercent(ratios.h)}</span>
+              </div>
             </div>
             <Label className="flex items-start gap-2 rounded-md border bg-white p-3 text-sm">
               <input
@@ -1661,6 +1716,21 @@ function VideoCleanupTool() {
           subtitle={uploadedVideo?.originalFileName}
           src={uploadedVideo?.previewUrl}
           emptyText="Upload a video to preview it here"
+          overlay={
+            uploadedVideo ? (
+              <WatermarkRegionSelector
+                region={region}
+                videoWidth={uploadedVideo.width}
+                videoHeight={uploadedVideo.height}
+                onChange={(nextRegion) => {
+                  setX(nextRegion.x);
+                  setY(nextRegion.y);
+                  setW(nextRegion.w);
+                  setH(nextRegion.h);
+                }}
+              />
+            ) : null
+          }
           metadata={
             uploadedVideo
               ? {
@@ -1704,8 +1774,22 @@ function VideoCleanupTool() {
             </Button>
           </div>
           {output?.relativePath ? (
-            <div className="break-all rounded-md border bg-muted/50 p-2 text-xs text-muted-foreground">
-              {output.relativePath}
+            <div className="space-y-1 rounded-md border bg-muted/50 p-2 text-xs text-muted-foreground">
+              <div className="break-all">output: {output.relativePath}</div>
+              <div>mode: {output.mode}</div>
+              <div>
+                region: x={output.region.x} y={output.region.y} w={output.region.w} h={output.region.h}
+              </div>
+              <div>
+                relative: x={formatPercent(ratios.x)} y={formatPercent(ratios.y)} w={formatPercent(ratios.w)} h=
+                {formatPercent(ratios.h)}
+              </div>
+              <div className="break-all">filter: {output.ffmpegFilter}</div>
+              <div className="break-all">input: {output.inputPath}</div>
+              <div className="break-all">output: {output.outputPath}</div>
+              <div className="break-all">input sha256: {output.inputSha256}</div>
+              <div className="break-all">output sha256: {output.outputSha256}</div>
+              <div>hashes different: {String(output.hashesDifferent)}</div>
             </div>
           ) : null}
         </VideoPreviewCard>
@@ -1718,6 +1802,7 @@ function VideoPreviewCard({
   title,
   subtitle,
   src,
+  overlay,
   emptyText,
   metadata,
   fileSize,
@@ -1728,6 +1813,7 @@ function VideoPreviewCard({
   title: string;
   subtitle?: string;
   src?: string;
+  overlay?: ReactNode;
   emptyText: string;
   metadata?: { width: number; height: number; duration?: number };
   fileSize?: number;
@@ -1760,13 +1846,17 @@ function VideoPreviewCard({
           </div>
         ) : null}
         {src ? (
-          <video
-            src={src}
-            controls
-            preload="metadata"
-            className="aspect-video w-full rounded-md border bg-black object-contain"
-            onError={onError}
-          />
+          <div className="relative aspect-video w-full overflow-hidden rounded-md border bg-black">
+            <video
+              key={src}
+              src={src}
+              controls
+              preload="metadata"
+              className="h-full w-full object-contain"
+              onError={onError}
+            />
+            {overlay}
+          </div>
         ) : (
           <div className="flex aspect-video w-full items-center justify-center rounded-md border bg-muted/50 p-4 text-center text-sm text-muted-foreground">
             {emptyText}
@@ -1776,6 +1866,208 @@ function VideoPreviewCard({
       </CardContent>
     </Card>
   );
+}
+
+function WatermarkRegionSelector({
+  region,
+  videoWidth,
+  videoHeight,
+  onChange
+}: {
+  region: CleanupRegion;
+  videoWidth: number;
+  videoHeight: number;
+  onChange: (region: CleanupRegion) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [drag, setDrag] = useState<{
+    action: string;
+    startX: number;
+    startY: number;
+    region: CleanupRegion;
+  } | null>(null);
+  const videoArea = getRenderedVideoArea(containerRef.current, videoWidth, videoHeight);
+  const displayRegion = videoArea
+    ? {
+        x: videoArea.x + (region.x / videoWidth) * videoArea.width,
+        y: videoArea.y + (region.y / videoHeight) * videoArea.height,
+        w: (region.w / videoWidth) * videoArea.width,
+        h: (region.h / videoHeight) * videoArea.height
+      }
+    : { x: 0, y: 0, w: 0, h: 0 };
+
+  function displayDeltaToReal(deltaX: number, deltaY: number) {
+    const area = getRenderedVideoArea(containerRef.current, videoWidth, videoHeight);
+    if (!area) return { x: 0, y: 0 };
+    return {
+      x: Math.round((deltaX * videoWidth) / area.width),
+      y: Math.round((deltaY * videoHeight) / area.height)
+    };
+  }
+
+  function updateDrag(clientX: number, clientY: number) {
+    if (!drag) return;
+    const delta = displayDeltaToReal(clientX - drag.startX, clientY - drag.startY);
+    const next = resizeRegion(drag.region, drag.action, delta.x, delta.y, videoWidth, videoHeight);
+    onChange(next);
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="pointer-events-none absolute inset-0"
+      onPointerDown={(event) => {
+        const target = event.target as HTMLElement;
+        const action = target.dataset.action || "move";
+        setDrag({
+          action,
+          startX: event.clientX,
+          startY: event.clientY,
+          region
+        });
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => updateDrag(event.clientX, event.clientY)}
+      onPointerUp={(event) => {
+        updateDrag(event.clientX, event.clientY);
+        setDrag(null);
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => setDrag(null)}
+    >
+      <div
+        data-action="move"
+        className="pointer-events-auto absolute cursor-move border-2 border-yellow-300 bg-yellow-300/15 shadow-[0_0_0_9999px_rgba(0,0,0,0.08)]"
+        style={{
+          left: displayRegion.x,
+          top: displayRegion.y,
+          width: displayRegion.w,
+          height: displayRegion.h
+        }}
+      >
+        <div className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-yellow-200">
+          Watermark box
+        </div>
+        {["nw", "ne", "sw", "se"].map((corner) => (
+          <button
+            key={corner}
+            type="button"
+            data-action={`resize-${corner}`}
+            aria-label={`Resize ${corner}`}
+            className={cn(
+              "absolute h-4 w-4 rounded-full border border-black bg-yellow-300",
+              corner.includes("n") ? "-top-2" : "-bottom-2",
+              corner.includes("w") ? "-left-2" : "-right-2"
+            )}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function getRenderedVideoArea(element: HTMLElement | null, videoWidth: number, videoHeight: number) {
+  if (!element || videoWidth <= 0 || videoHeight <= 0) return null;
+  const rect = element.getBoundingClientRect();
+  const containerRatio = rect.width / rect.height;
+  const videoRatio = videoWidth / videoHeight;
+  if (containerRatio > videoRatio) {
+    const height = rect.height;
+    const width = height * videoRatio;
+    return { x: (rect.width - width) / 2, y: 0, width, height };
+  }
+  const width = rect.width;
+  const height = width / videoRatio;
+  return { x: 0, y: (rect.height - height) / 2, width, height };
+}
+
+function resizeRegion(
+  start: CleanupRegion,
+  action: string,
+  deltaX: number,
+  deltaY: number,
+  videoWidth: number,
+  videoHeight: number
+) {
+  const next = { ...start };
+  if (action === "move") {
+    next.x = start.x + deltaX;
+    next.y = start.y + deltaY;
+  }
+  if (action === "resize-se") {
+    next.w = start.w + deltaX;
+    next.h = start.h + deltaY;
+  }
+  if (action === "resize-sw") {
+    next.x = start.x + deltaX;
+    next.w = start.w - deltaX;
+    next.h = start.h + deltaY;
+  }
+  if (action === "resize-ne") {
+    next.y = start.y + deltaY;
+    next.w = start.w + deltaX;
+    next.h = start.h - deltaY;
+  }
+  if (action === "resize-nw") {
+    next.x = start.x + deltaX;
+    next.y = start.y + deltaY;
+    next.w = start.w - deltaX;
+    next.h = start.h - deltaY;
+  }
+  next.w = Math.max(8, Math.round(next.w));
+  next.h = Math.max(8, Math.round(next.h));
+  next.x = Math.round(next.x);
+  next.y = Math.round(next.y);
+  if (next.x < 0) {
+    next.w += next.x;
+    next.x = 0;
+  }
+  if (next.y < 0) {
+    next.h += next.y;
+    next.y = 0;
+  }
+  if (next.x + next.w > videoWidth) next.w = videoWidth - next.x;
+  if (next.y + next.h > videoHeight) next.h = videoHeight - next.y;
+  return {
+    x: Math.max(0, next.x),
+    y: Math.max(0, next.y),
+    w: Math.max(1, next.w),
+    h: Math.max(1, next.h)
+  };
+}
+
+function ratiosToRegion(ratios: CleanupRegion, width: number, height: number) {
+  return resizeRegion(
+    {
+      x: Math.round(width * ratios.x),
+      y: Math.round(height * ratios.y),
+      w: Math.round(width * ratios.w),
+      h: Math.round(height * ratios.h)
+    },
+    "move",
+    0,
+    0,
+    width,
+    height
+  );
+}
+
+function regionToRatios(region: CleanupRegion, width: number, height: number) {
+  return {
+    x: width ? region.x / width : 0,
+    y: height ? region.y / height : 0,
+    w: width ? region.w / width : 0,
+    h: height ? region.h / height : 0
+  };
+}
+
+function clampRegionNumber(value: number, max?: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(Math.round(value), max || Number.MAX_SAFE_INTEGER));
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function formatDuration(duration: number) {

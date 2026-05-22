@@ -33,6 +33,7 @@ export type VideoCleanupResult = {
   mode: VideoCleanupMode;
   region: VideoCleanupRegion;
   video?: VideoMetadata;
+  filter: string;
   command: "ffmpeg";
   args: string[];
   dryRun: boolean;
@@ -246,7 +247,7 @@ export function buildVideoCleanupFilter({
   if (mode === "preview") {
     return {
       type: "vf" as const,
-      value: `drawbox=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:color=red@0.55:t=4`
+      value: `drawbox=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:color=yellow@0.95:t=8,drawbox=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:color=black@0.75:t=2`
     };
   }
 
@@ -281,21 +282,24 @@ function buildArgs(input: string, output: string, mode: VideoCleanupMode, region
   const filter = buildVideoCleanupFilter({ mode, region, video, coverColor });
 
   if (filter.type === "filter_complex") {
-    return [
-      "-y",
-      "-i",
-      input,
-      "-filter_complex",
-      filter.value,
-      "-map",
-      "[v]",
-      "-map",
-      "0:a?",
-      ...commonVideoArgs,
-      "-c:a",
-      "copy",
-      output
-    ];
+    return {
+      args: [
+        "-y",
+        "-i",
+        input,
+        "-filter_complex",
+        filter.value,
+        "-map",
+        "[v]",
+        "-map",
+        "0:a?",
+        ...commonVideoArgs,
+        "-c:a",
+        "copy",
+        output
+      ],
+      filter: filter.value
+    };
   }
 
   const args = ["-y", "-i", input];
@@ -306,7 +310,7 @@ function buildArgs(input: string, output: string, mode: VideoCleanupMode, region
   } else {
     args.push("-map", "0:v:0", "-map", "0:a?", "-c:a", "copy", output);
   }
-  return args;
+  return { args, filter: filter.value };
 }
 
 export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<VideoCleanupResult> {
@@ -328,7 +332,7 @@ export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<
   const video = await getVideoMetadata(input);
   validateRegion(region, video);
 
-  const args = buildArgs(input, output, mode, region, video, options.coverColor);
+  const { args, filter } = buildArgs(input, output, mode, region, video, options.coverColor);
   if (!options.dryRun) {
     await runCommand("ffmpeg", args);
   }
@@ -339,6 +343,7 @@ export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<
     mode,
     region,
     video,
+    filter,
     command: "ffmpeg",
     args,
     dryRun: Boolean(options.dryRun)

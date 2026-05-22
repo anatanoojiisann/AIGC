@@ -79,6 +79,7 @@ async function main() {
           output: result.output,
           mode: result.mode,
           region: result.region,
+          filter: result.filter,
           dryRun: result.dryRun
         }
       },

@@ -31,6 +31,7 @@ export async function serveVideoFile(request: Request, options: ServeOptions) {
 
   const headers = new Headers({
     "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store",
     "Content-Type": options.mime || "video/mp4",
     "Content-Disposition": contentDisposition(options.filename, options.attachment)
   });

@@ -1,6 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "fs/promises";
 import path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { assertUnderStorage, storageRoot, storageRelativePath } from "@/lib/storage/files";
 import {
   getVideoMetadata,
@@ -21,6 +21,7 @@ export type UploadedVideoRecord = {
   size: number;
   path: string;
   metadata: VideoMetadata;
+  sha256: string;
   createdAt: string;
 };
 
@@ -35,6 +36,10 @@ export type CleanupOutputRecord = {
   mode: VideoCleanupMode;
   region: VideoCleanupRegion;
   metadata: VideoMetadata;
+  inputSha256: string;
+  outputSha256: string;
+  hashesDifferent: boolean;
+  ffmpegFilter: string;
   createdAt: string;
 };
 
@@ -117,6 +122,11 @@ async function assertNonEmptyFile(filePath: string) {
   return info.size;
 }
 
+async function sha256File(filePath: string) {
+  const buffer = await readFile(assertUnderStorage(filePath));
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
 function ensureVideoLike(file: File) {
   const extension = path.extname(file.name).toLowerCase();
   if (!file.type.startsWith("video/") && !allowedVideoExtensions.has(extension)) {
@@ -130,7 +140,7 @@ export function uploadedVideoUrl(id: string) {
 }
 
 export function cleanupOutputUrl(id: string) {
-  return `/api/video-cleanup/output/${encodeURIComponent(id)}`;
+  return `/api/video-cleanup/output/${encodeURIComponent(id)}?v=${encodeURIComponent(id)}`;
 }
 
 export function cleanupDownloadUrl(id: string) {
@@ -156,6 +166,7 @@ export async function saveUploadedCleanupVideo(file: File) {
     size: buffer.length,
     path: filePath,
     metadata,
+    sha256: createHash("sha256").update(buffer).digest("hex"),
     createdAt: new Date().toISOString()
   };
   await writeJson(uploadRecordPath(id), record);
@@ -234,6 +245,7 @@ export async function runUploadedVideoCleanup({
       updatedAt: new Date().toISOString()
     } satisfies LocalCleanupJobRecord);
 
+    const inputSha256 = uploaded.sha256 || (await sha256File(uploaded.path));
     const result = await runVideoCleanupJob({
       input: uploaded.path,
       output: outputPath,
@@ -246,6 +258,10 @@ export async function runUploadedVideoCleanup({
     });
 
     const size = await assertNonEmptyFile(outputPath);
+    const outputSha256 = await sha256File(outputPath);
+    if ((mode === "preview" || mode === "cover") && inputSha256 === outputSha256) {
+      throw new VideoCleanupError("PROCESSING_FAILED", `${mode} output matched the input video hash.`);
+    }
     const outputRecord: CleanupOutputRecord = {
       id: outputId,
       uploadedVideoId,
@@ -257,6 +273,10 @@ export async function runUploadedVideoCleanup({
       mode,
       region,
       metadata: result.video || uploaded.metadata,
+      inputSha256,
+      outputSha256,
+      hashesDifferent: inputSha256 !== outputSha256,
+      ffmpegFilter: result.filter,
       createdAt: new Date().toISOString()
     };
     await writeJson(outputRecordPath(outputId), outputRecord);

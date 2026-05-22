@@ -97,7 +97,13 @@ export async function runUploadedCleanup(body: CleanupBody, defaultMode?: VideoC
     relativePath: storageRelativePath(data.output.path),
     fileSize: data.output.size,
     region: data.output.region,
-    videoMetadata: data.output.metadata
+    videoMetadata: data.output.metadata,
+    ffmpegFilter: data.output.ffmpegFilter,
+    inputPath: storageRelativePath(data.result.input),
+    outputPath: storageRelativePath(data.result.output),
+    inputSha256: data.output.inputSha256,
+    outputSha256: data.output.outputSha256,
+    hashesDifferent: data.output.hashesDifferent
   };
 }
 
