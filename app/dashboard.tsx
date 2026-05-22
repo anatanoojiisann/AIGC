@@ -155,8 +155,19 @@ type SettingsPayload = {
   redisConfigured: boolean;
 };
 
-type ProviderSource = "mock" | "pixverse_official_api" | "pixverse_web_browser" | "pai_video_web_browser";
+type ProviderSource =
+  | "mock"
+  | "pixverse_official_api"
+  | "pixverse_web_browser"
+  | "pai_video_web_browser";
 type LoginBrowser = "chrome" | "safari";
+
+type ProviderBrowserSettings = {
+  enabled: boolean;
+  loginStatus: string;
+  profilePath: string;
+  browserProfiles?: Record<LoginBrowser, string>;
+};
 
 type ProviderSettingsData = {
   activeSource: ProviderSource;
@@ -165,18 +176,8 @@ type ProviderSettingsData = {
     apiKeyConfigured: boolean;
     maskedKey: string | null;
   };
-  pixverseWebBrowser: {
-    enabled: boolean;
-    loginStatus: string;
-    profilePath: string;
-    browserProfiles?: Record<LoginBrowser, string>;
-  };
-  paiVideoWebBrowser: {
-    enabled: boolean;
-    loginStatus: string;
-    profilePath: string;
-    browserProfiles?: Record<LoginBrowser, string>;
-  };
+  pixverseWebBrowser: ProviderBrowserSettings;
+  paiVideoWebBrowser: ProviderBrowserSettings;
   sources: Record<ProviderSource, string>;
 };
 
