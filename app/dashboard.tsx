@@ -4,7 +4,9 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import {
   AlertTriangle,
   CheckCircle2,
+  Copy,
   Download,
+  ExternalLink,
   FileJson,
   Film,
   FolderPlus,
@@ -91,8 +93,10 @@ type CleanupProcessResult = {
   mode: string;
   outputUrl: string;
   downloadUrl: string;
+  relativePath: string;
+  fileSize: number;
   region: { x: number; y: number; w: number; h: number };
-  video: {
+  videoMetadata: {
     width: number;
     height: number;
     duration?: number;
@@ -1448,6 +1452,8 @@ function VideoCleanupTool() {
   const [processing, setProcessing] = useState(false);
   const [output, setOutput] = useState<CleanupProcessResult | null>(null);
   const [localError, setLocalError] = useState("");
+  const [originalPreviewError, setOriginalPreviewError] = useState("");
+  const [outputPreviewError, setOutputPreviewError] = useState("");
 
   async function uploadVideo(files: FileList | null) {
     const file = files?.[0];
@@ -1465,6 +1471,8 @@ function VideoCleanupTool() {
       setStatus("uploading");
       setLocalError("");
       setOutput(null);
+      setOriginalPreviewError("");
+      setOutputPreviewError("");
       const data = await apiRequest<UploadedCleanupVideo>("/api/video-cleanup/upload", {
         method: "POST",
         body: form
@@ -1500,6 +1508,7 @@ function VideoCleanupTool() {
     setProcessing(true);
     setStatus("processing");
     setLocalError("");
+    setOutputPreviewError("");
     setOutput(null);
 
     try {
@@ -1543,156 +1552,239 @@ function VideoCleanupTool() {
     }
   }
 
+  async function copyOutputPath() {
+    if (!output?.relativePath) {
+      setStatus("error");
+      setLocalError("Output path is not ready yet.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(output.relativePath);
+      setLocalError("");
+    } catch {
+      setStatus("error");
+      setLocalError("Could not copy the output path.");
+    }
+  }
+
   const actionsDisabled = processing || !uploadedVideo || status === "uploading";
+  const outputTitle = output?.mode === "preview" ? "Preview Output" : "Processed Output";
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[360px_minmax(420px,1fr)_360px]">
+    <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Video Asset</CardTitle>
+          <CardTitle>Video Cleanup</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr_minmax(220px,300px)]">
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
             Use Video Cleanup only for videos you own, generated yourself, or have permission to edit.
           </div>
-          <Field label="Upload Local Video">
-            <Label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border bg-background text-sm text-foreground">
-              <Film className="h-4 w-4" />
-              Upload Video
+          <div className="space-y-4">
+            <Field label="Upload Local Video">
+              <Label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border bg-background text-sm text-foreground">
+                <Film className="h-4 w-4" />
+                Upload Video
+                <input
+                  type="file"
+                  accept="video/*"
+                  className="hidden"
+                  onChange={(event) => uploadVideo(event.target.files)}
+                />
+              </Label>
+            </Field>
+            <Field label="Mode">
+              <Select value={mode} onChange={(event) => setMode(event.target.value)}>
+                <option value="preview">preview</option>
+                <option value="delogo">delogo</option>
+                <option value="cover">cover</option>
+                <option value="crop">crop</option>
+              </Select>
+            </Field>
+            {mode === "cover" ? (
+              <Field label="Cover Color">
+                <Input value={coverColor} onChange={(event) => setCoverColor(event.target.value)} />
+              </Field>
+            ) : null}
+          </div>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Field label="X">
+                <Input type="number" min={1} value={x} onChange={(event) => setX(Number(event.target.value))} />
+              </Field>
+              <Field label="Y">
+                <Input type="number" min={1} value={y} onChange={(event) => setY(Number(event.target.value))} />
+              </Field>
+              <Field label="W">
+                <Input type="number" min={1} value={w} onChange={(event) => setW(Number(event.target.value))} />
+              </Field>
+              <Field label="H">
+                <Input type="number" min={1} value={h} onChange={(event) => setH(Number(event.target.value))} />
+              </Field>
+            </div>
+            <Label className="flex items-start gap-2 rounded-md border bg-white p-3 text-sm">
               <input
-                type="file"
-                accept="video/*"
-                className="hidden"
-                onChange={(event) => uploadVideo(event.target.files)}
+                type="checkbox"
+                className="mt-1"
+                checked={confirmedRights}
+                onChange={(event) => setConfirmedRights(event.target.checked)}
               />
+              <span>I confirm I own this video or have permission to edit it.</span>
             </Label>
-          </Field>
-          {uploadedVideo ? (
-            <div className="space-y-3">
-              <div className="rounded-md border bg-white p-3 text-sm">
-                <div className="text-xs text-muted-foreground">Uploaded video</div>
-                <div className="mt-1 break-all font-medium">{uploadedVideo.originalFileName}</div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  {uploadedVideo.width}x{uploadedVideo.height}
-                  {uploadedVideo.duration ? ` · ${uploadedVideo.duration.toFixed(1)}s` : ""}
-                </div>
-              </div>
-              <video
-                src={uploadedVideo.previewUrl}
-                controls
-                preload="metadata"
-                className="aspect-video w-full rounded-md border bg-black"
-                onError={() => {
-                  setStatus("error");
-                  setLocalError("Uploaded video preview could not load.");
-                }}
-              />
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button variant="outline" onClick={() => processVideo("preview")} disabled={actionsDisabled}>
+                {processing ? "Working..." : "Generate Preview"}
+              </Button>
+              <Button onClick={() => processVideo(mode)} disabled={actionsDisabled}>
+                {processing ? "Working..." : "Process Video"}
+              </Button>
             </div>
-          ) : (
-            <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
-              Upload a local MP4 or other supported video to begin.
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Region Controls</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Field label="Mode">
-            <Select value={mode} onChange={(event) => setMode(event.target.value)}>
-              <option value="preview">preview</option>
-              <option value="delogo">delogo</option>
-              <option value="cover">cover</option>
-              <option value="crop">crop</option>
-            </Select>
-          </Field>
-          {mode === "cover" ? (
-            <Field label="Cover Color">
-              <Input value={coverColor} onChange={(event) => setCoverColor(event.target.value)} />
-            </Field>
-          ) : null}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="X">
-              <Input type="number" min={1} value={x} onChange={(event) => setX(Number(event.target.value))} />
-            </Field>
-            <Field label="Y">
-              <Input type="number" min={1} value={y} onChange={(event) => setY(Number(event.target.value))} />
-            </Field>
-            <Field label="W">
-              <Input type="number" min={1} value={w} onChange={(event) => setW(Number(event.target.value))} />
-            </Field>
-            <Field label="H">
-              <Input type="number" min={1} value={h} onChange={(event) => setH(Number(event.target.value))} />
-            </Field>
           </div>
-          <Label className="flex items-start gap-2 rounded-md border bg-white p-3 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={confirmedRights}
-              onChange={(event) => setConfirmedRights(event.target.checked)}
-            />
-            <span>I confirm I own this video or have permission to edit it.</span>
-          </Label>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <Button variant="outline" onClick={() => processVideo("preview")} disabled={actionsDisabled}>
-              Generate Preview
-            </Button>
-            <Button onClick={() => processVideo(mode)} disabled={actionsDisabled}>
-              Process Video
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Status</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="rounded-md border bg-white p-3 text-sm">
+          <div className="space-y-3 rounded-md border bg-white p-3 text-sm">
             <div className="text-xs text-muted-foreground">Current status</div>
             <div className="mt-1 font-medium">{status}</div>
-          </div>
-          {localError ? (
-            <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
-              <AlertTriangle className="h-4 w-4" />
-              {localError}
-            </div>
-          ) : null}
-          {output ? (
-            <div className="space-y-2">
-              <div className="rounded-md border bg-white p-3 text-sm">
-                <div className="text-xs text-muted-foreground">Generated output</div>
-                <div className="mt-1 break-all font-medium">{output.outputId}</div>
+            {localError ? (
+              <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
+                <AlertTriangle className="h-4 w-4" />
+                {localError}
               </div>
-              <video
-                src={output.outputUrl}
-                controls
-                preload="metadata"
-                className="aspect-video w-full rounded-md border bg-black"
-                onError={() => {
-                  setStatus("error");
-                  setLocalError("Processed output video could not load.");
-                }}
-              />
-            </div>
-          ) : (
-            <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
-              Generated preview or processed video will appear here.
-            </div>
-          )}
-          <Button variant="outline" className="w-full" disabled={!output?.downloadUrl} onClick={downloadResult}>
-            <Download className="h-4 w-4" />
-            Download Result
-          </Button>
+            ) : null}
+          </div>
         </CardContent>
       </Card>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <VideoPreviewCard
+          title="Original Uploaded Video"
+          subtitle={uploadedVideo?.originalFileName}
+          src={uploadedVideo?.previewUrl}
+          emptyText="Upload a video to preview it here"
+          metadata={
+            uploadedVideo
+              ? {
+                  width: uploadedVideo.width,
+                  height: uploadedVideo.height,
+                  duration: uploadedVideo.duration
+                }
+              : undefined
+          }
+          error={originalPreviewError}
+          onError={() => {
+            setOriginalPreviewError("Video preview failed to load. Please check the file format or try another video.");
+          }}
+        />
+        <VideoPreviewCard
+          title={outputTitle}
+          subtitle={output?.mode}
+          src={output?.outputUrl}
+          emptyText="Generate preview or process video to see the result here"
+          metadata={output?.videoMetadata}
+          fileSize={output?.fileSize}
+          error={outputPreviewError}
+          onError={() => {
+            setOutputPreviewError("Video preview failed to load. Please check the file format or try another video.");
+          }}
+        >
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Button variant="outline" className="w-full" disabled={!output?.downloadUrl} onClick={downloadResult}>
+              <Download className="h-4 w-4" />
+              Download Result
+            </Button>
+            <Button variant="outline" className="w-full" disabled={!output?.relativePath} onClick={copyOutputPath}>
+              <Copy className="h-4 w-4" />
+              Copy output path
+            </Button>
+            <Button asChild variant="outline" className={cn("w-full", !output?.outputUrl && "pointer-events-none opacity-50")}>
+              <a href={output?.outputUrl || "#"} target="_blank" rel="noreferrer">
+                <ExternalLink className="h-4 w-4" />
+                Open output
+              </a>
+            </Button>
+          </div>
+          {output?.relativePath ? (
+            <div className="break-all rounded-md border bg-muted/50 p-2 text-xs text-muted-foreground">
+              {output.relativePath}
+            </div>
+          ) : null}
+        </VideoPreviewCard>
+      </div>
     </div>
   );
+}
+
+function VideoPreviewCard({
+  title,
+  subtitle,
+  src,
+  emptyText,
+  metadata,
+  fileSize,
+  error,
+  onError,
+  children
+}: {
+  title: string;
+  subtitle?: string;
+  src?: string;
+  emptyText: string;
+  metadata?: { width: number; height: number; duration?: number };
+  fileSize?: number;
+  error?: string;
+  onError: () => void;
+  children?: ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {subtitle ? (
+          <div className="rounded-md border bg-white p-3 text-sm">
+            <div className="break-all font-medium">{subtitle}</div>
+            {metadata ? (
+              <div className="mt-1 text-xs text-muted-foreground">
+                {metadata.width}x{metadata.height}
+                {metadata.duration ? ` · ${formatDuration(metadata.duration)}` : ""}
+                {fileSize ? ` · ${formatBytes(fileSize)}` : ""}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {error ? (
+          <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
+            <AlertTriangle className="h-4 w-4" />
+            {error}
+          </div>
+        ) : null}
+        {src ? (
+          <video
+            src={src}
+            controls
+            preload="metadata"
+            className="aspect-video w-full rounded-md border bg-black object-contain"
+            onError={onError}
+          />
+        ) : (
+          <div className="flex aspect-video w-full items-center justify-center rounded-md border bg-muted/50 p-4 text-center text-sm text-muted-foreground">
+            {emptyText}
+          </div>
+        )}
+        {children ? <div className="space-y-2">{children}</div> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function formatDuration(duration: number) {
+  return `${duration.toFixed(1)}s`;
+}
+
+function formatBytes(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function parseJsonText(value: string | null) {

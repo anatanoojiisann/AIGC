@@ -130,7 +130,7 @@ export function uploadedVideoUrl(id: string) {
 }
 
 export function cleanupOutputUrl(id: string) {
-  return `/api/video-cleanup/file/${encodeURIComponent(id)}`;
+  return `/api/video-cleanup/output/${encodeURIComponent(id)}`;
 }
 
 export function cleanupDownloadUrl(id: string) {

@@ -5,7 +5,7 @@ import {
   assertUnderStorage,
   createVideoCleanupOutputPath,
   storedFileInfo,
-  storageRelativePath
+  storageRelativePath,
 } from "@/lib/storage/files";
 import {
   runVideoCleanupJob,
@@ -94,8 +94,10 @@ export async function runUploadedCleanup(body: CleanupBody, defaultMode?: VideoC
     mode: data.output.mode,
     outputUrl: cleanupOutputUrl(data.output.id),
     downloadUrl: cleanupDownloadUrl(data.output.id),
+    relativePath: storageRelativePath(data.output.path),
+    fileSize: data.output.size,
     region: data.output.region,
-    video: data.output.metadata
+    videoMetadata: data.output.metadata
   };
 }
 
