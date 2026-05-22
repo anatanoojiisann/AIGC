@@ -1,13 +1,15 @@
-import { apiErrorMessage, errorJson, okJson } from "@/lib/api-response";
 import { disconnectPixVerseSession } from "@/lib/browser/provider-login";
+import { okJson } from "@/lib/api-response";
+import { parseLoginBrowser, providerLoginErrorJson } from "../../_browser";
 
 export const runtime = "nodejs";
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
-    const result = await disconnectPixVerseSession();
+    const body = await request.json().catch(() => ({}));
+    const result = await disconnectPixVerseSession(parseLoginBrowser(body.browser));
     return okJson(result);
   } catch (error) {
-    return errorJson("INTERNAL_ERROR", apiErrorMessage(error), 500);
+    return providerLoginErrorJson(error);
   }
 }

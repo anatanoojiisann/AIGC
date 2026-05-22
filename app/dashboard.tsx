@@ -129,6 +129,7 @@ type SettingsPayload = {
 };
 
 type ProviderSource = "mock" | "pixverse_official_api" | "pixverse_web_browser" | "pai_video_web_browser";
+type LoginBrowser = "chrome" | "safari";
 
 type ProviderSettingsData = {
   activeSource: ProviderSource;
@@ -141,11 +142,13 @@ type ProviderSettingsData = {
     enabled: boolean;
     loginStatus: string;
     profilePath: string;
+    browserProfiles?: Record<LoginBrowser, string>;
   };
   paiVideoWebBrowser: {
     enabled: boolean;
     loginStatus: string;
     profilePath: string;
+    browserProfiles?: Record<LoginBrowser, string>;
   };
   sources: Record<ProviderSource, string>;
 };
@@ -958,6 +961,8 @@ function ProviderSettings({
   const [activeSourceDraft, setActiveSourceDraft] = useState<ProviderSource>("mock");
   const [apiKey, setApiKey] = useState("");
   const [pixverseLoginMethod, setPixverseLoginMethod] = useState("email");
+  const [pixverseBrowser, setPixverseBrowser] = useState<LoginBrowser>("chrome");
+  const [paiBrowser, setPaiBrowser] = useState<LoginBrowser>("chrome");
   const [phoneHint, setPhoneHint] = useState("");
   const [loadingAction, setLoadingAction] = useState("");
 
@@ -1005,16 +1010,20 @@ function ProviderSettings({
     await apiRequest("/api/provider-settings/pixverse-web/start-login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ method: pixverseLoginMethod })
+      body: JSON.stringify({ method: pixverseLoginMethod, browser: pixverseBrowser })
     });
     await refreshProviderSettings();
-    setNotice("PixVerse login opened in a local browser session.");
+    setNotice(`PixVerse ${pixverseBrowser === "safari" ? "Safari" : "Chrome"} login opened.`);
   }
 
   async function startPaiLogin() {
-    await apiRequest("/api/provider-settings/pai-video/start-login", { method: "POST" });
+    await apiRequest("/api/provider-settings/pai-video/start-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browser: paiBrowser })
+    });
     await refreshProviderSettings();
-    setNotice("pai.video login opened in a local browser session.");
+    setNotice(`pai.video ${paiBrowser === "safari" ? "Safari" : "Chrome"} login opened.`);
   }
 
   const status = providerSettings?.sources || {
@@ -1120,6 +1129,12 @@ function ProviderSettings({
               <option value="google">Google login</option>
             </Select>
           </Field>
+          <Field label="Browser">
+            <Select value={pixverseBrowser} onChange={(event) => setPixverseBrowser(event.target.value as LoginBrowser)}>
+              <option value="chrome">Chrome Login</option>
+              <option value="safari">Safari Login</option>
+            </Select>
+          </Field>
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => runSettingsAction("pixverse-start", startPixverseLogin)} disabled={loadingAction !== ""}>
               Open PixVerse Login
@@ -1128,9 +1143,22 @@ function ProviderSettings({
               variant="outline"
               onClick={() =>
                 runSettingsAction("pixverse-check", async () => {
-                  await apiRequest("/api/provider-settings/pixverse-web/check-login", { method: "POST" });
+                  const data = await apiRequest<{ status: string; browser: LoginBrowser }>(
+                    "/api/provider-settings/pixverse-web/check-login",
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ browser: pixverseBrowser })
+                    }
+                  );
                   await refreshProviderSettings();
-                  setNotice("PixVerse login status checked.");
+                  setNotice(
+                    data.status === "connected"
+                      ? "Connected"
+                      : data.status === "not_connected"
+                        ? "Not connected"
+                        : "Login status unknown"
+                  );
                 })
               }
               disabled={loadingAction !== ""}
@@ -1141,7 +1169,11 @@ function ProviderSettings({
               variant="outline"
               onClick={() =>
                 runSettingsAction("pixverse-disconnect", async () => {
-                  await apiRequest("/api/provider-settings/pixverse-web/disconnect", { method: "POST" });
+                  await apiRequest("/api/provider-settings/pixverse-web/disconnect", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ browser: pixverseBrowser })
+                  });
                   await refreshProviderSettings();
                   setNotice("PixVerse local browser session disconnected.");
                 })
@@ -1164,6 +1196,12 @@ function ProviderSettings({
             Enter your phone number and verification code on the pai.video page. The app will not collect or store your
             code.
           </div>
+          <Field label="Browser">
+            <Select value={paiBrowser} onChange={(event) => setPaiBrowser(event.target.value as LoginBrowser)}>
+              <option value="chrome">Chrome Login</option>
+              <option value="safari">Safari Login</option>
+            </Select>
+          </Field>
           <Field label="Phone Number Hint">
             <Input value={phoneHint} onChange={(event) => setPhoneHint(event.target.value)} placeholder="Optional local note only" />
           </Field>
@@ -1175,9 +1213,22 @@ function ProviderSettings({
               variant="outline"
               onClick={() =>
                 runSettingsAction("pai-check", async () => {
-                  await apiRequest("/api/provider-settings/pai-video/check-login", { method: "POST" });
+                  const data = await apiRequest<{ status: string; browser: LoginBrowser }>(
+                    "/api/provider-settings/pai-video/check-login",
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ browser: paiBrowser })
+                    }
+                  );
                   await refreshProviderSettings();
-                  setNotice("pai.video login status checked.");
+                  setNotice(
+                    data.status === "connected"
+                      ? "Connected"
+                      : data.status === "not_connected"
+                        ? "Not connected"
+                        : "Login status unknown"
+                  );
                 })
               }
               disabled={loadingAction !== ""}
@@ -1188,7 +1239,11 @@ function ProviderSettings({
               variant="outline"
               onClick={() =>
                 runSettingsAction("pai-disconnect", async () => {
-                  await apiRequest("/api/provider-settings/pai-video/disconnect", { method: "POST" });
+                  await apiRequest("/api/provider-settings/pai-video/disconnect", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ browser: paiBrowser })
+                  });
                   await refreshProviderSettings();
                   setNotice("pai.video local browser session disconnected.");
                 })

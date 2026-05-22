@@ -88,6 +88,9 @@ Provider Settings are available in the top navigation and at `/settings`.
 - PixVerse official API key can be saved, tested, masked, and cleared. The raw key is never returned to the browser.
 - PixVerse web login opens PixVerse in a local Playwright browser session for manual email or Google login.
 - pai.video web login opens pai.video in a local Playwright browser session for manual phone verification.
+- Chrome Login uses Playwright Chromium. Install it with `npx playwright install chromium`.
+- Safari Login uses Playwright WebKit as a Safari-like browser session. Install it with `npx playwright install webkit`.
+- Safari Login does not use system Safari and does not access your real Safari cookies.
 - Browser profiles are local only under `storage/browser-profiles/`.
 - This MVP does not add real PixVerse generation calls or private web API calls.
 

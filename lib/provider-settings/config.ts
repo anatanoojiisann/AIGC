@@ -4,6 +4,7 @@ import { storageRoot, assertUnderStorage } from "@/lib/storage/files";
 
 export type ProviderSource = "mock" | "pixverse_official_api" | "pixverse_web_browser" | "pai_video_web_browser";
 export type LoginStatus = "not_connected" | "connected" | "unknown" | "error";
+export type LoginBrowser = "chrome" | "safari";
 export type SourceStatus = "available" | "disabled" | "needs_api_key" | "needs_login" | "connected" | "error";
 
 export type ProviderSettingsConfig = {
@@ -17,11 +18,13 @@ export type ProviderSettingsConfig = {
     enabled: boolean;
     loginStatus: LoginStatus;
     profilePath: string;
+    browserProfiles?: Record<LoginBrowser, string>;
   };
   paiVideoWebBrowser: {
     enabled: boolean;
     loginStatus: LoginStatus;
     profilePath: string;
+    browserProfiles?: Record<LoginBrowser, string>;
   };
 };
 
@@ -39,12 +42,20 @@ const defaultConfig: ProviderSettingsConfig = {
   pixverseWebBrowser: {
     enabled: false,
     loginStatus: "not_connected",
-    profilePath: "storage/browser-profiles/pixverse"
+    profilePath: "storage/browser-profiles/pixverse-chrome",
+    browserProfiles: {
+      chrome: "storage/browser-profiles/pixverse-chrome",
+      safari: "storage/browser-profiles/pixverse-safari"
+    }
   },
   paiVideoWebBrowser: {
     enabled: false,
     loginStatus: "not_connected",
-    profilePath: "storage/browser-profiles/pai-video"
+    profilePath: "storage/browser-profiles/pai-video-chrome",
+    browserProfiles: {
+      chrome: "storage/browser-profiles/pai-video-chrome",
+      safari: "storage/browser-profiles/pai-video-safari"
+    }
   }
 };
 
@@ -67,7 +78,7 @@ function secretsPath() {
   return assertUnderStorage(path.join(configDirectory(), "provider-secrets.local.json"));
 }
 
-function browserProfilePath(name: "pixverse" | "pai-video") {
+function browserProfilePath(name: "pixverse-chrome" | "pixverse-safari" | "pai-video-chrome" | "pai-video-safari") {
   return assertUnderStorage(path.join(storageRoot(), "browser-profiles", name));
 }
 
@@ -113,12 +124,20 @@ function mergeConfig(config: Partial<ProviderSettingsConfig>, secrets: ProviderS
     pixverseWebBrowser: {
       enabled: Boolean(config.pixverseWebBrowser?.enabled),
       loginStatus: config.pixverseWebBrowser?.loginStatus || "not_connected",
-      profilePath: "storage/browser-profiles/pixverse"
+      profilePath: "storage/browser-profiles/pixverse-chrome",
+      browserProfiles: {
+        chrome: "storage/browser-profiles/pixverse-chrome",
+        safari: "storage/browser-profiles/pixverse-safari"
+      }
     },
     paiVideoWebBrowser: {
       enabled: Boolean(config.paiVideoWebBrowser?.enabled),
       loginStatus: config.paiVideoWebBrowser?.loginStatus || "not_connected",
-      profilePath: "storage/browser-profiles/pai-video"
+      profilePath: "storage/browser-profiles/pai-video-chrome",
+      browserProfiles: {
+        chrome: "storage/browser-profiles/pai-video-chrome",
+        safari: "storage/browser-profiles/pai-video-safari"
+      }
     }
   };
 }
@@ -209,14 +228,22 @@ export function providerSettingsResponse(config: ProviderSettingsConfig) {
   };
 }
 
-export function pixverseProfilePath() {
-  return browserProfilePath("pixverse");
+export function pixverseProfilePath(browser: LoginBrowser) {
+  return browserProfilePath(browser === "safari" ? "pixverse-safari" : "pixverse-chrome");
 }
 
-export function paiVideoProfilePath() {
-  return browserProfilePath("pai-video");
+export function paiVideoProfilePath(browser: LoginBrowser) {
+  return browserProfilePath(browser === "safari" ? "pai-video-safari" : "pai-video-chrome");
 }
 
-export async function removeBrowserProfile(provider: "pixverse" | "pai-video") {
-  await rm(browserProfilePath(provider), { recursive: true, force: true });
+export async function removeBrowserProfile(provider: "pixverse" | "pai-video", browser: LoginBrowser) {
+  const name =
+    provider === "pixverse"
+      ? browser === "safari"
+        ? "pixverse-safari"
+        : "pixverse-chrome"
+      : browser === "safari"
+        ? "pai-video-safari"
+        : "pai-video-chrome";
+  await rm(browserProfilePath(name), { recursive: true, force: true });
 }
