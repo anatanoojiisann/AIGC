@@ -16,6 +16,7 @@ export type VideoCleanupRegion = {
 export type VideoMetadata = {
   width: number;
   height: number;
+  duration?: number;
 };
 
 export type VideoCleanupOptions = VideoCleanupRegion & {
@@ -152,13 +153,13 @@ export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata
     "-select_streams",
     "v:0",
     "-show_entries",
-    "stream=width,height",
+    "stream=width,height:format=duration",
     "-of",
     "json",
     inputPath
   ]);
 
-  let payload: { streams?: Array<{ width?: number; height?: number }> };
+  let payload: { streams?: Array<{ width?: number; height?: number }>; format?: { duration?: string } };
   try {
     payload = JSON.parse(stdout);
   } catch {
@@ -172,7 +173,12 @@ export async function getVideoMetadata(inputPath: string): Promise<VideoMetadata
     throw new VideoCleanupError("UNSUPPORTED_VIDEO_FORMAT", "No readable video stream was found.");
   }
 
-  return { width, height };
+  const duration = Number(payload.format?.duration);
+  return {
+    width,
+    height,
+    ...(Number.isFinite(duration) && duration > 0 ? { duration } : {})
+  };
 }
 
 function validateRegion(region: VideoCleanupRegion, video: VideoMetadata) {

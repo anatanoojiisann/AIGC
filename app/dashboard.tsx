@@ -76,6 +76,29 @@ type VideoCleanupJob = {
   outputAsset?: Asset | null;
 };
 
+type UploadedCleanupVideo = {
+  uploadedVideoId: string;
+  originalFileName: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+  duration?: number;
+};
+
+type CleanupProcessResult = {
+  jobId: string;
+  outputId: string;
+  mode: string;
+  outputUrl: string;
+  downloadUrl: string;
+  region: { x: number; y: number; w: number; h: number };
+  video: {
+    width: number;
+    height: number;
+    duration?: number;
+  };
+};
+
 type Scene = {
   id: string;
   title: string;
@@ -222,7 +245,6 @@ export default function Dashboard({
   const [selectedSceneId, setSelectedSceneId] = useState<string>("");
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [cleanupJobs, setCleanupJobs] = useState<VideoCleanupJob[]>([]);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [providerSettings, setProviderSettings] = useState<ProviderSettingsData | null>(null);
   const [newProjectName, setNewProjectName] = useState("PixVerse Project");
@@ -266,24 +288,21 @@ export default function Dashboard({
 
   const loadMeta = useCallback(async () => {
     try {
-      const [capabilityData, jobData, settingsData, cleanupJobData, providerSettingsData] = await Promise.all([
+      const [capabilityData, jobData, settingsData, providerSettingsData] = await Promise.all([
         apiRequest<{ capabilities: Capability[] }>("/api/capabilities"),
         apiRequest<{ jobs: Job[] }>("/api/jobs"),
         apiRequest<{ settings: SettingsPayload }>("/api/settings"),
-        apiRequest<{ jobs: VideoCleanupJob[] }>("/api/video-cleanup/jobs"),
         apiRequest<{ settings: ProviderSettingsData }>("/api/provider-settings")
       ]);
       setCapabilities(capabilityData.capabilities);
       setJobs(jobData.jobs);
       setSettings(settingsData.settings);
-      setCleanupJobs(cleanupJobData.jobs);
       setProviderSettings(providerSettingsData.settings);
       setProvider(providerSettingsData.settings.activeSource);
       setErrorMessage("");
     } catch (error) {
       setCapabilities([]);
       setJobs([]);
-      setCleanupJobs([]);
       setProviderSettings(null);
       setErrorMessage(errorText(error));
     }
@@ -633,14 +652,7 @@ export default function Dashboard({
           <CapabilityRegistry capabilities={capabilities} updateCapability={updateCapability} />
         ) : null}
         {view === "jobs" ? <JobMonitor jobs={jobs} retryJob={retryJob} /> : null}
-        {view === "cleanup" ? (
-          <VideoCleanupTool
-            project={project}
-            cleanupJobs={cleanupJobs}
-            reloadProject={loadProject}
-            reloadMeta={loadMeta}
-          />
-        ) : null}
+        {view === "cleanup" ? <VideoCleanupTool /> : null}
       </section>
     </main>
   );
@@ -1423,26 +1435,8 @@ function JobRow({ job, retryJob }: { job: Job; retryJob: (jobId: string, provide
   );
 }
 
-function VideoCleanupTool({
-  project,
-  cleanupJobs,
-  reloadProject,
-  reloadMeta
-}: {
-  project: Project | null;
-  cleanupJobs: VideoCleanupJob[];
-  reloadProject: (id: string) => Promise<void>;
-  reloadMeta: () => Promise<void>;
-}) {
-  const videoAssets = useMemo(
-    () => project?.assets.filter((asset) => asset.type === "video" || asset.mime.startsWith("video/")) || [],
-    [project?.assets]
-  );
-  const projectCleanupJobs = useMemo(
-    () => cleanupJobs.filter((job) => job.projectId === project?.id),
-    [cleanupJobs, project?.id]
-  );
-  const [assetId, setAssetId] = useState("");
+function VideoCleanupTool() {
+  const [uploadedVideo, setUploadedVideo] = useState<UploadedCleanupVideo | null>(null);
   const [mode, setMode] = useState("preview");
   const [x, setX] = useState(20);
   const [y, setY] = useState(20);
@@ -1450,97 +1444,106 @@ function VideoCleanupTool({
   const [h, setH] = useState(30);
   const [coverColor, setCoverColor] = useState("black@0.85");
   const [confirmedRights, setConfirmedRights] = useState(false);
+  const [status, setStatus] = useState<"idle" | "uploading" | "ready" | "processing" | "success" | "error">("idle");
   const [processing, setProcessing] = useState(false);
-  const [outputPath, setOutputPath] = useState("");
-  const [outputAssetId, setOutputAssetId] = useState("");
+  const [output, setOutput] = useState<CleanupProcessResult | null>(null);
   const [localError, setLocalError] = useState("");
-
-  useEffect(() => {
-    if (!assetId || !videoAssets.some((asset) => asset.id === assetId)) {
-      setAssetId(videoAssets[0]?.id || "");
-    }
-  }, [assetId, videoAssets]);
 
   async function uploadVideo(files: FileList | null) {
     const file = files?.[0];
-    if (!file || !project) return;
+    if (!file) return;
+    if (!file.type.startsWith("video/")) {
+      setStatus("error");
+      setLocalError("Upload a valid local video file.");
+      return;
+    }
 
     const form = new FormData();
-    form.append("files", file);
-    form.append("role", "video_cleanup_source");
+    form.append("file", file);
 
     try {
-      const data = await apiRequest<{ assets: Asset[] }>(`/api/projects/${project.id}/files`, {
+      setStatus("uploading");
+      setLocalError("");
+      setOutput(null);
+      const data = await apiRequest<UploadedCleanupVideo>("/api/video-cleanup/upload", {
         method: "POST",
         body: form
       });
-      const uploadedVideo = data.assets.find((asset) => asset.type === "video" || asset.mime.startsWith("video/"));
-      if (uploadedVideo) setAssetId(uploadedVideo.id);
-      setLocalError("");
-      await reloadProject(project.id);
+      setUploadedVideo(data);
+      setStatus("ready");
     } catch (error) {
+      setStatus("error");
       setLocalError(errorText(error));
     }
   }
 
+  function validateRegionForUi() {
+    if (!uploadedVideo) return "Upload a local video before processing.";
+    const values = { x, y, w, h };
+    const invalid = Object.entries(values).find(([, value]) => !Number.isFinite(value) || value <= 0);
+    if (invalid) return `${invalid[0]} must be a positive number.`;
+    if (x + w > uploadedVideo.width || y + h > uploadedVideo.height) {
+      return `Selected region must stay inside the uploaded video (${uploadedVideo.width}x${uploadedVideo.height}).`;
+    }
+    if (!confirmedRights) return "Confirm that you own this video or have permission to edit it before processing.";
+    return "";
+  }
+
   async function processVideo(nextMode = mode) {
-    if (!project) {
-      setLocalError("Create or open a project first.");
-      return;
-    }
-    if (!assetId) {
-      setLocalError("Select or upload a local video asset first.");
-      return;
-    }
-    if (!confirmedRights) {
-      setLocalError("Confirm that you own this video or have permission to edit it before processing.");
+    const validationError = validateRegionForUi();
+    if (validationError) {
+      setStatus("error");
+      setLocalError(validationError);
       return;
     }
 
     setProcessing(true);
+    setStatus("processing");
     setLocalError("");
-    setOutputPath("");
-    setOutputAssetId("");
+    setOutput(null);
 
     try {
-      const data = await apiRequest<{
-        job: VideoCleanupJob;
-        outputAsset: Asset;
-        result: {
-          outputPath: string;
-          relativeOutputPath: string;
-        };
-      }>(nextMode === "preview" ? "/api/video-cleanup/preview" : "/api/video-cleanup/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: project.id,
-          assetId,
-          mode: nextMode,
-          region: { x, y, w, h },
-          coverColor,
-          confirmedRights
-        })
-      });
-      setOutputPath(data.result.relativeOutputPath || data.result.outputPath);
-      setOutputAssetId(data.outputAsset.id);
-      await Promise.all([reloadProject(project.id), reloadMeta()]);
+      const data = await apiRequest<CleanupProcessResult>(
+        nextMode === "preview" ? "/api/video-cleanup/preview" : "/api/video-cleanup/process",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            uploadedVideoId: uploadedVideo?.uploadedVideoId,
+            mode: nextMode,
+            region: { x, y, w, h },
+            coverColor
+          })
+        }
+      );
+      setOutput(data);
+      setStatus("success");
     } catch (error) {
+      setStatus("error");
       setLocalError(errorText(error));
     } finally {
       setProcessing(false);
     }
   }
 
-  if (!project) {
-    return (
-      <Card>
-        <CardContent className="p-6 text-sm text-muted-foreground">Create or open a project to use Video Cleanup.</CardContent>
-      </Card>
-    );
+  async function downloadResult() {
+    if (!output?.downloadUrl) {
+      setStatus("error");
+      setLocalError("Download is not ready yet.");
+      return;
+    }
+
+    try {
+      const response = await fetch(output.downloadUrl, { method: "HEAD" });
+      if (!response.ok) throw new Error("Output file is missing or not ready for download.");
+      window.location.href = output.downloadUrl;
+    } catch (error) {
+      setStatus("error");
+      setLocalError(errorText(error));
+    }
   }
 
-  const selectedAsset = videoAssets.find((asset) => asset.id === assetId);
+  const actionsDisabled = processing || !uploadedVideo || status === "uploading";
 
   return (
     <div className="grid gap-4 xl:grid-cols-[360px_minmax(420px,1fr)_360px]">
@@ -1552,16 +1555,6 @@ function VideoCleanupTool({
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
             Use Video Cleanup only for videos you own, generated yourself, or have permission to edit.
           </div>
-          <Field label="Select Video">
-            <Select value={assetId} onChange={(event) => setAssetId(event.target.value)}>
-              <option value="">Select a video asset</option>
-              {videoAssets.map((asset) => (
-                <option key={asset.id} value={asset.id}>
-                  {asset.originalName}
-                </option>
-              ))}
-            </Select>
-          </Field>
           <Field label="Upload Local Video">
             <Label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border bg-background text-sm text-foreground">
               <Film className="h-4 w-4" />
@@ -1574,10 +1567,31 @@ function VideoCleanupTool({
               />
             </Label>
           </Field>
-          {selectedAsset ? (
-            <video src={`/api/assets/${selectedAsset.id}`} controls className="aspect-video w-full rounded-md border bg-black" />
+          {uploadedVideo ? (
+            <div className="space-y-3">
+              <div className="rounded-md border bg-white p-3 text-sm">
+                <div className="text-xs text-muted-foreground">Uploaded video</div>
+                <div className="mt-1 break-all font-medium">{uploadedVideo.originalFileName}</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {uploadedVideo.width}x{uploadedVideo.height}
+                  {uploadedVideo.duration ? ` · ${uploadedVideo.duration.toFixed(1)}s` : ""}
+                </div>
+              </div>
+              <video
+                src={uploadedVideo.previewUrl}
+                controls
+                preload="metadata"
+                className="aspect-video w-full rounded-md border bg-black"
+                onError={() => {
+                  setStatus("error");
+                  setLocalError("Uploaded video preview could not load.");
+                }}
+              />
+            </div>
           ) : (
-            <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">No video asset selected.</div>
+            <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
+              Upload a local MP4 or other supported video to begin.
+            </div>
           )}
         </CardContent>
       </Card>
@@ -1591,7 +1605,6 @@ function VideoCleanupTool({
             <Select value={mode} onChange={(event) => setMode(event.target.value)}>
               <option value="preview">preview</option>
               <option value="delogo">delogo</option>
-              <option value="blur">blur</option>
               <option value="cover">cover</option>
               <option value="crop">crop</option>
             </Select>
@@ -1625,10 +1638,10 @@ function VideoCleanupTool({
             <span>I confirm I own this video or have permission to edit it.</span>
           </Label>
           <div className="grid gap-2 sm:grid-cols-2">
-            <Button variant="outline" onClick={() => processVideo("preview")} disabled={processing}>
-              Run Preview
+            <Button variant="outline" onClick={() => processVideo("preview")} disabled={actionsDisabled}>
+              Generate Preview
             </Button>
-            <Button onClick={() => processVideo(mode)} disabled={processing}>
+            <Button onClick={() => processVideo(mode)} disabled={actionsDisabled}>
               Process Video
             </Button>
           </div>
@@ -1640,46 +1653,42 @@ function VideoCleanupTool({
           <CardTitle>Status</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="rounded-md border bg-white p-3 text-sm">
+            <div className="text-xs text-muted-foreground">Current status</div>
+            <div className="mt-1 font-medium">{status}</div>
+          </div>
           {localError ? (
             <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
               <AlertTriangle className="h-4 w-4" />
               {localError}
             </div>
           ) : null}
-          {outputPath ? (
-            <div className="rounded-md border bg-white p-3 text-sm">
-              <div className="text-xs text-muted-foreground">Generated file</div>
-              <div className="mt-1 break-all font-medium">{outputPath}</div>
+          {output ? (
+            <div className="space-y-2">
+              <div className="rounded-md border bg-white p-3 text-sm">
+                <div className="text-xs text-muted-foreground">Generated output</div>
+                <div className="mt-1 break-all font-medium">{output.outputId}</div>
+              </div>
+              <video
+                src={output.outputUrl}
+                controls
+                preload="metadata"
+                className="aspect-video w-full rounded-md border bg-black"
+                onError={() => {
+                  setStatus("error");
+                  setLocalError("Processed output video could not load.");
+                }}
+              />
             </div>
           ) : (
             <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
-              Generated preview or processed video path will appear here.
+              Generated preview or processed video will appear here.
             </div>
           )}
-          {outputAssetId ? (
-            <div className="space-y-2">
-              <video src={`/api/assets/${outputAssetId}`} controls className="aspect-video w-full rounded-md border bg-black" />
-              <Button asChild variant="outline" className="w-full">
-                <a href={`/api/assets/${outputAssetId}`} download>
-                  <Download className="h-4 w-4" />
-                  Download Output
-                </a>
-              </Button>
-            </div>
-          ) : null}
-          <div className="space-y-2">
-            <div className="text-sm font-medium">Job Log</div>
-            {projectCleanupJobs.slice(0, 6).map((job) => (
-              <div key={job.id} className="rounded-md border bg-white p-2 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{job.mode}</span>
-                  <span className="rounded-sm bg-muted px-2 py-1">{job.status}</span>
-                </div>
-                <div className="mt-1 truncate text-muted-foreground">{job.outputPath || job.id}</div>
-                {job.errorMessage ? <div className="mt-1 text-destructive">{job.errorMessage}</div> : null}
-              </div>
-            ))}
-          </div>
+          <Button variant="outline" className="w-full" disabled={!output?.downloadUrl} onClick={downloadResult}>
+            <Download className="h-4 w-4" />
+            Download Result
+          </Button>
         </CardContent>
       </Card>
     </div>

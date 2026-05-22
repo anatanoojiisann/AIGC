@@ -77,7 +77,7 @@ Create a synthetic local test video:
 npm run video:cleanup:test-fixture
 ```
 
-`video:watermark` remains as a compatibility alias for the cleanup CLI. The local UI is available at `/video-cleanup` and in the top navigation as `Video Cleanup`. It requires the confirmation checkbox before processing and writes outputs under `STORAGE_ROOT` without overwriting the original asset.
+`video:watermark` remains as a compatibility alias for the cleanup CLI. The local UI is available at `/video-cleanup` and in the top navigation as `Video Cleanup`. It uses an upload-only flow for local videos, requires the confirmation checkbox before processing, serves browser-safe preview URLs, and writes outputs under `STORAGE_ROOT` without overwriting the original upload.
 
 ## Provider Settings
 

@@ -10,13 +10,20 @@ import {
 import {
   runVideoCleanupJob,
   VideoCleanupError,
+  VIDEO_CLEANUP_MODES,
   type VideoCleanupMode,
   type VideoCleanupRegion
 } from "@/lib/video/ffmpeg";
+import {
+  cleanupDownloadUrl,
+  cleanupOutputUrl,
+  runUploadedVideoCleanup
+} from "@/lib/video-cleanup/local-store";
 
 type CleanupBody = {
   projectId?: string;
   assetId?: string;
+  uploadedVideoId?: string;
   mode?: string;
   region?: Partial<VideoCleanupRegion>;
   confirmedRights?: boolean;
@@ -62,6 +69,36 @@ function requireRegion(region: CleanupBody["region"]) {
   };
 }
 
+function requireMode(mode: unknown, defaultMode?: VideoCleanupMode) {
+  const value = (defaultMode || requireString(mode, "mode")).toLowerCase() as VideoCleanupMode;
+  if (!VIDEO_CLEANUP_MODES.includes(value)) {
+    throw new VideoCleanupError("VALIDATION_ERROR", `Unsupported mode "${value || "missing"}".`);
+  }
+  return value;
+}
+
+export async function runUploadedCleanup(body: CleanupBody, defaultMode?: VideoCleanupMode) {
+  const uploadedVideoId = requireString(body.uploadedVideoId, "uploadedVideoId");
+  const mode = requireMode(body.mode, defaultMode);
+  const region = requireRegion(body.region);
+  const data = await runUploadedVideoCleanup({
+    uploadedVideoId,
+    mode,
+    region,
+    coverColor: body.coverColor
+  });
+
+  return {
+    jobId: data.jobId,
+    outputId: data.output.id,
+    mode: data.output.mode,
+    outputUrl: cleanupOutputUrl(data.output.id),
+    downloadUrl: cleanupDownloadUrl(data.output.id),
+    region: data.output.region,
+    video: data.output.metadata
+  };
+}
+
 export async function runAssetCleanup(body: CleanupBody, defaultMode?: VideoCleanupMode) {
   if (body.confirmedRights !== true) {
     throw new VideoCleanupError(
@@ -72,7 +109,7 @@ export async function runAssetCleanup(body: CleanupBody, defaultMode?: VideoClea
 
   const projectId = requireString(body.projectId, "projectId");
   const assetId = requireString(body.assetId, "assetId");
-  const mode = (defaultMode || requireString(body.mode, "mode")) as VideoCleanupMode;
+  const mode = requireMode(body.mode, defaultMode);
   const region = requireRegion(body.region);
 
   const sourceAsset = await prisma.asset.findFirst({
