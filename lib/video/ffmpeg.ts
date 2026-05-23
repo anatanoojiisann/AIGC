@@ -1,4 +1,5 @@
 import { access, mkdir, stat } from "fs/promises";
+import { constants as fsConstants } from "fs";
 import path from "path";
 import { spawn } from "child_process";
 
@@ -45,6 +46,12 @@ export type VideoCleanupResult = {
   maskPath?: string;
 };
 
+export type ProPainterAvailability = {
+  available: boolean;
+  code?: "PROPAINTER_NOT_INSTALLED";
+  message?: string;
+};
+
 export class VideoCleanupError extends Error {
   code: string;
   details?: unknown;
@@ -58,12 +65,13 @@ export class VideoCleanupError extends Error {
 }
 
 const supportedExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
+const propainterUnavailableMessage = "ProPainter is optional and not configured. Use another mode or install ProPainter.";
 
 function commandMissing(command: string) {
   if (command !== "ffmpeg" && command !== "ffprobe") {
     return new VideoCleanupError(
       "PROPAINTER_NOT_INSTALLED",
-      "ProPainter is not installed or its Python environment is unavailable. Set PROPAINTER_ENABLED=true, PROPAINTER_REPO_PATH, and PROPAINTER_PYTHON."
+      propainterUnavailableMessage
     );
   }
 
@@ -109,7 +117,7 @@ function runCommand(command: string, args: string[], options: { cwd?: string } =
             ? "Unsupported video format or unreadable video stream."
             : command === "ffmpeg"
               ? `FFmpeg processing failed with exit code ${code}.`
-              : "ProPainter processing could not run. Check the local ProPainter setup.",
+              : propainterUnavailableMessage,
           { stderr: stderr.trim() }
         )
       );
@@ -272,7 +280,7 @@ export function buildVideoCleanupFilter({
   coverColor?: string;
 }) {
   if (mode === "ai-inpaint-propainter") {
-    throw new VideoCleanupError("PROPAINTER_NOT_INSTALLED", "ProPainter mode requires the optional ProPainter worker.");
+    throw new VideoCleanupError("PROPAINTER_NOT_INSTALLED", propainterUnavailableMessage);
   }
 
   if (mode === "preview") {
@@ -344,21 +352,31 @@ function buildArgs(input: string, output: string, mode: VideoCleanupMode, region
   return { args, filter: filter.value };
 }
 
-function propainterNotInstalled(message?: string) {
+function propainterNotInstalled() {
   return new VideoCleanupError(
     "PROPAINTER_NOT_INSTALLED",
-    message ||
-      "ProPainter is not installed or enabled. Set PROPAINTER_ENABLED=true, PROPAINTER_REPO_PATH, and PROPAINTER_PYTHON to use AI Inpaint - ProPainter."
+    propainterUnavailableMessage
   );
 }
 
 async function assertDirectory(directory: string) {
   try {
     const info = await stat(directory);
-    if (!info.isDirectory()) throw propainterNotInstalled("PROPAINTER_REPO_PATH must point to a local ProPainter directory.");
+    if (!info.isDirectory()) throw propainterNotInstalled();
   } catch (error) {
     if (error instanceof VideoCleanupError) throw error;
-    throw propainterNotInstalled("PROPAINTER_REPO_PATH does not exist or is not readable.");
+    throw propainterNotInstalled();
+  }
+}
+
+async function assertExecutable(filePath: string) {
+  try {
+    const info = await stat(filePath);
+    if (!info.isFile()) throw propainterNotInstalled();
+    await access(filePath, fsConstants.X_OK);
+  } catch (error) {
+    if (error instanceof VideoCleanupError) throw error;
+    throw propainterNotInstalled();
   }
 }
 
@@ -371,7 +389,45 @@ async function firstExistingFile(candidates: string[]) {
       // Try the next common ProPainter entrypoint.
     }
   }
-  throw propainterNotInstalled("Could not find a ProPainter inference script in PROPAINTER_REPO_PATH.");
+  throw propainterNotInstalled();
+}
+
+async function getPropainterEnvironment() {
+  if (process.env.PROPAINTER_ENABLED !== "true") {
+    throw propainterNotInstalled();
+  }
+
+  const repoPath = process.env.PROPAINTER_REPO_PATH?.trim();
+  const pythonPath = process.env.PROPAINTER_PYTHON?.trim();
+  if (!repoPath || !pythonPath) throw propainterNotInstalled();
+
+  const resolvedRepoPath = path.resolve(process.cwd(), repoPath);
+  const resolvedPythonPath = path.resolve(process.cwd(), pythonPath);
+  await assertDirectory(resolvedRepoPath);
+  await assertExecutable(resolvedPythonPath);
+  const script = await firstExistingFile([
+    path.join(resolvedRepoPath, "inference_propainter.py"),
+    path.join(resolvedRepoPath, "inference", "propainter.py"),
+    path.join(resolvedRepoPath, "scripts", "inference_propainter.py")
+  ]);
+
+  return { resolvedRepoPath, resolvedPythonPath, script };
+}
+
+export async function checkPropainterAvailability(): Promise<ProPainterAvailability> {
+  try {
+    await getPropainterEnvironment();
+    return { available: true };
+  } catch (error) {
+    if (error instanceof VideoCleanupError && error.code === "PROPAINTER_NOT_INSTALLED") {
+      return {
+        available: false,
+        code: "PROPAINTER_NOT_INSTALLED",
+        message: propainterUnavailableMessage
+      };
+    }
+    throw error;
+  }
 }
 
 async function createPropainterMask(maskPath: string, region: VideoCleanupRegion, video: VideoMetadata) {
@@ -404,23 +460,7 @@ async function runPropainterInpaint({
   quality: ProPainterQuality;
   dryRun: boolean;
 }) {
-  if (process.env.PROPAINTER_ENABLED !== "true") {
-    throw propainterNotInstalled();
-  }
-
-  const repoPath = process.env.PROPAINTER_REPO_PATH?.trim();
-  if (!repoPath) {
-    throw propainterNotInstalled("PROPAINTER_REPO_PATH is required for AI Inpaint - ProPainter.");
-  }
-
-  const python = process.env.PROPAINTER_PYTHON?.trim() || "python";
-  const resolvedRepoPath = path.resolve(process.cwd(), repoPath);
-  await assertDirectory(resolvedRepoPath);
-  const script = await firstExistingFile([
-    path.join(resolvedRepoPath, "inference_propainter.py"),
-    path.join(resolvedRepoPath, "inference", "propainter.py"),
-    path.join(resolvedRepoPath, "scripts", "inference_propainter.py")
-  ]);
+  const { resolvedRepoPath, resolvedPythonPath, script } = await getPropainterEnvironment();
 
   const maskPath = path.join(path.dirname(output), `${path.basename(output, path.extname(output))}-mask.png`);
   const filter = `propainter-mask=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:quality=${quality}`;
@@ -438,7 +478,7 @@ async function runPropainterInpaint({
 
   if (!dryRun) {
     await createPropainterMask(maskPath, region, video);
-    await runCommand(python, args, { cwd: resolvedRepoPath });
+    await runCommand(resolvedPythonPath, args, { cwd: resolvedRepoPath });
   }
 
   return { args, filter, maskPath };

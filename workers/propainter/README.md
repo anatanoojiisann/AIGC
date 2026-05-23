@@ -146,7 +146,7 @@ When ProPainter is not configured, the command should return:
   "ok": false,
   "error": {
     "code": "PROPAINTER_NOT_INSTALLED",
-    "message": "ProPainter is not installed or enabled..."
+    "message": "ProPainter is optional and not configured. Use another mode or install ProPainter."
   }
 }
 ```

@@ -151,6 +151,7 @@ test("video cleanup CLI ProPainter mode returns clean setup error when disabled"
     const payload = JSON.parse(result.stderr);
     assert.equal(payload.ok, false);
     assert.equal(payload.error.code, "PROPAINTER_NOT_INSTALLED");
+    assert.match(payload.error.message, /optional and not configured/);
     assert.doesNotMatch(result.stderr, /\n\s+at\s/);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -187,6 +188,91 @@ test("video cleanup CLI missing input returns structured JSON", async () => {
     const payload = JSON.parse(result.stderr);
     assert.equal(payload.ok, false);
     assert.equal(payload.error.code, "INPUT_NOT_FOUND");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("video cleanup API keeps local modes working when optional ProPainter is unavailable", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "aigc-video-upload-api-"));
+  try {
+    const input = await createFixtureVideo(directory);
+    const script = `
+      const { readFile } = await import("node:fs/promises");
+      const { POST } = await import("./app/api/video-cleanup/upload/route.ts");
+      const { GET } = await import("./app/api/video-cleanup/file/[uploadedVideoId]/route.ts");
+      const { POST: processVideo } = await import("./app/api/video-cleanup/process/route.ts");
+      const { GET: downloadVideo } = await import("./app/api/video-cleanup/download/[outputId]/route.ts");
+      const { GET: getPropainterStatus } = await import("./app/api/video-cleanup/propainter-status/route.ts");
+      const buffer = await readFile(process.env.UPLOAD_FIXTURE);
+      const form = new FormData();
+      form.append("file", new File([new Uint8Array(buffer)], "fixture-video-cleanup.mp4", { type: "application/octet-stream" }));
+      const uploadResponse = await POST(new Request("http://local/api/video-cleanup/upload", { method: "POST", body: form }));
+      const payload = await uploadResponse.json();
+      if (uploadResponse.status !== 200 || !payload.ok || !payload.data.uploadedVideoId || !payload.data.previewUrl || !payload.data.width || !payload.data.height) {
+        console.error(JSON.stringify({ status: uploadResponse.status, payload }));
+        process.exit(1);
+      }
+      const previewResponse = await GET(new Request("http://local" + payload.data.previewUrl), {
+        params: Promise.resolve({ uploadedVideoId: payload.data.uploadedVideoId })
+      });
+      if (previewResponse.status !== 200 || !(previewResponse.headers.get("content-type") || "").startsWith("video/") || previewResponse.headers.get("cache-control") !== "no-store") {
+        console.error(JSON.stringify({ status: previewResponse.status, contentType: previewResponse.headers.get("content-type") }));
+        process.exit(1);
+      }
+      const statusResponse = await getPropainterStatus();
+      const statusPayload = await statusResponse.json();
+      if (statusResponse.status !== 200 || !statusPayload.ok || statusPayload.data.available !== false || statusPayload.data.code !== "PROPAINTER_NOT_INSTALLED") {
+        console.error(JSON.stringify({ status: statusResponse.status, statusPayload }));
+        process.exit(1);
+      }
+      const aiResponse = await processVideo(new Request("http://local/api/video-cleanup/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadedVideoId: payload.data.uploadedVideoId, mode: "ai-inpaint-propainter", quality: "balanced", region: { x: 20, y: 20, w: 80, h: 30 } })
+      }));
+      const aiPayload = await aiResponse.json();
+      if (aiResponse.status !== 200 || aiPayload.ok || aiPayload.error?.code !== "PROPAINTER_NOT_INSTALLED" || !aiPayload.error.message.includes("optional and not configured")) {
+        console.error(JSON.stringify({ status: aiResponse.status, aiPayload }));
+        process.exit(1);
+      }
+      const localResponse = await processVideo(new Request("http://local/api/video-cleanup/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadedVideoId: payload.data.uploadedVideoId, mode: "preview", region: { x: 20, y: 20, w: 80, h: 30 } })
+      }));
+      const localPayload = await localResponse.json();
+      if (localResponse.status !== 200 || !localPayload.ok || localPayload.data.outputUrl === payload.data.previewUrl || !localPayload.data.downloadUrl) {
+        console.error(JSON.stringify({ status: localResponse.status, localPayload }));
+        process.exit(1);
+      }
+      const delogoResponse = await processVideo(new Request("http://local/api/video-cleanup/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadedVideoId: payload.data.uploadedVideoId, mode: "delogo", region: { x: 20, y: 20, w: 80, h: 30 } })
+      }));
+      const delogoPayload = await delogoResponse.json();
+      if (delogoResponse.status !== 200 || !delogoPayload.ok || delogoPayload.data.outputUrl === payload.data.previewUrl || !delogoPayload.data.downloadUrl) {
+        console.error(JSON.stringify({ status: delogoResponse.status, delogoPayload }));
+        process.exit(1);
+      }
+      const downloadResponse = await downloadVideo(new Request("http://local" + delogoPayload.data.downloadUrl), {
+        params: Promise.resolve({ outputId: delogoPayload.data.outputId })
+      });
+      const downloadBytes = await downloadResponse.arrayBuffer();
+      if (downloadResponse.status !== 200 || !(downloadResponse.headers.get("content-type") || "").startsWith("video/") || downloadBytes.byteLength <= 0) {
+        console.error(JSON.stringify({ status: downloadResponse.status, length: downloadBytes.byteLength }));
+        process.exit(1);
+      }
+      console.log(JSON.stringify({ ok: true, data: payload.data, aiCode: aiPayload.error.code, localOutputUrl: localPayload.data.outputUrl, delogoOutputUrl: delogoPayload.data.outputUrl }));
+    `;
+    const result = await run("node", ["--import", "tsx", "--eval", script], {
+      env: { UPLOAD_FIXTURE: input, PROPAINTER_ENABLED: "false", PROPAINTER_REPO_PATH: "", PROPAINTER_PYTHON: "" }
+    });
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.data.originalFileName, "fixture-video-cleanup.mp4");
+    assert.match(payload.data.previewUrl, /^\/api\/video-cleanup\/file\//);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

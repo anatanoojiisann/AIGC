@@ -40,7 +40,7 @@ export function cleanupErrorResponse(error: unknown) {
         : error.code === "FFMPEG_NOT_FOUND"
           ? 503
           : error.code === "PROPAINTER_NOT_INSTALLED"
-            ? 503
+            ? 200
             : error.code === "PROCESSING_FAILED"
               ? 500
               : 400;

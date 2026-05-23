@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from "fs/promises";
+import { mkdir, readFile, stat, unlink, writeFile } from "fs/promises";
 import path from "path";
 import { createHash, randomUUID } from "crypto";
 import { assertUnderStorage, storageRoot, storageRelativePath } from "@/lib/storage/files";
@@ -13,6 +13,15 @@ import {
 } from "@/lib/video/ffmpeg";
 
 const allowedVideoExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
+const maxUploadBytes = Number(process.env.VIDEO_CLEANUP_MAX_UPLOAD_BYTES || 500 * 1024 * 1024);
+const videoMimeByExtension: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".m4v": "video/x-m4v",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo"
+};
 
 export type UploadedVideoRecord = {
   id: string;
@@ -132,11 +141,38 @@ async function sha256File(filePath: string) {
 }
 
 function ensureVideoLike(file: File) {
-  const extension = path.extname(file.name).toLowerCase();
-  if (!file.type.startsWith("video/") && !allowedVideoExtensions.has(extension)) {
-    throw new VideoCleanupError("UNSUPPORTED_VIDEO_FORMAT", "Upload a supported video file.");
+  if (!file || file.size <= 0) {
+    throw new VideoCleanupError("UPLOAD_FAILED", "Upload a non-empty video file.");
   }
-  return extension || ".mp4";
+  if (Number.isFinite(maxUploadBytes) && maxUploadBytes > 0 && file.size > maxUploadBytes) {
+    throw new VideoCleanupError("UPLOAD_FAILED", `Video file is too large. Max upload size is ${formatBytes(maxUploadBytes)}.`);
+  }
+
+  const submittedExtension = path.extname(file.name).toLowerCase();
+  const supportedExtension = allowedVideoExtensions.has(submittedExtension);
+  const videoMime = file.type.startsWith("video/");
+  if (!supportedExtension && !videoMime) {
+    throw new VideoCleanupError(
+      "UPLOAD_FAILED",
+      "Upload a video file with a supported type or extension: mp4, mov, webm, m4v, mkv, or avi."
+    );
+  }
+  const extension = supportedExtension ? submittedExtension : extensionForMime(file.type);
+  return {
+    extension,
+    mime: videoMimeByExtension[extension] || (videoMime ? file.type : "video/mp4")
+  };
+}
+
+function extensionForMime(mime: string) {
+  const found = Object.entries(videoMimeByExtension).find(([, value]) => value === mime);
+  return found?.[0] || ".mp4";
+}
+
+function formatBytes(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${Math.round(size / 1024 / 1024)} MB`;
 }
 
 export function uploadedVideoUrl(id: string) {
@@ -153,7 +189,7 @@ export function cleanupDownloadUrl(id: string) {
 
 export async function saveUploadedCleanupVideo(file: File) {
   await ensureCleanupDirs();
-  const extension = ensureVideoLike(file);
+  const { extension, mime } = ensureVideoLike(file);
   const id = randomUUID();
   const originalFileName = safeFileName(file.name);
   const filename = `${id}${extension}`;
@@ -161,12 +197,18 @@ export async function saveUploadedCleanupVideo(file: File) {
   const buffer = Buffer.from(await file.arrayBuffer());
   await writeFile(filePath, buffer);
 
-  const metadata = await getVideoMetadata(filePath);
+  let metadata: VideoMetadata;
+  try {
+    metadata = await getVideoMetadata(filePath);
+  } catch (error) {
+    await unlink(filePath).catch(() => undefined);
+    throw error;
+  }
   const record: UploadedVideoRecord = {
     id,
     originalFileName,
     filename,
-    mime: file.type || "video/mp4",
+    mime,
     size: buffer.length,
     path: filePath,
     metadata,

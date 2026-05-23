@@ -208,6 +208,12 @@ const defaultWatermarkRatios = {
 };
 
 type CleanupRegion = { x: number; y: number; w: number; h: number };
+type UploadState = "idle" | "selected" | "uploading" | "uploaded" | "error";
+type ProPainterAvailability = "unchecked" | "checking" | "available" | "unavailable";
+const browserVideoExtensions = [".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi"];
+const proPainterMode = "ai-inpaint-propainter";
+const proPainterUiMessage =
+  "ProPainter is not configured. Please choose Preview, Crop Rescale, Cover Patch, Soft Blur, or Delogo, or install ProPainter.";
 
 type ApiEnvelope<T> =
   | { ok: true; data: T }
@@ -218,6 +224,16 @@ type ApiEnvelope<T> =
         message?: string;
       };
     };
+
+class ClientApiError extends Error {
+  code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "ClientApiError";
+    this.code = code;
+  }
+}
 
 function errorText(error: unknown) {
   return error instanceof Error && error.message ? error.message : "Something went wrong.";
@@ -238,7 +254,10 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
     if (payload && typeof payload === "object" && "ok" in payload) {
       const envelope = payload as ApiEnvelope<T>;
       if (!envelope.ok) {
-        throw new Error(envelope.error?.message || `Request failed (${response.status}): ${url}`);
+        throw new ClientApiError(
+          envelope.error?.message || `Request failed (${response.status}): ${url}`,
+          envelope.error?.code
+        );
       }
     }
     throw new Error(`Request failed (${response.status}): ${url}`);
@@ -247,7 +266,7 @@ async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
   if (payload && typeof payload === "object" && "ok" in payload) {
     const envelope = payload as ApiEnvelope<T>;
     if (!envelope.ok) {
-      throw new Error(envelope.error?.message || `Request failed: ${url}`);
+      throw new ClientApiError(envelope.error?.message || `Request failed: ${url}`, envelope.error?.code);
     }
     return envelope.data;
   }
@@ -1459,6 +1478,8 @@ function JobRow({ job, retryJob }: { job: Job; retryJob: (jobId: string, provide
 }
 
 function VideoCleanupTool() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const modeCheckSequenceRef = useRef(0);
   const [uploadedVideo, setUploadedVideo] = useState<UploadedCleanupVideo | null>(null);
   const [mode, setMode] = useState("preview");
   const [quality, setQuality] = useState<"fast" | "balanced" | "high">("balanced");
@@ -1469,17 +1490,30 @@ function VideoCleanupTool() {
   const [coverColor, setCoverColor] = useState("black@0.85");
   const [confirmedRights, setConfirmedRights] = useState(false);
   const [status, setStatus] = useState<"idle" | "uploading" | "ready" | "processing" | "success" | "error">("idle");
+  const [uploadState, setUploadState] = useState<UploadState>("idle");
+  const [selectedFileName, setSelectedFileName] = useState("");
+  const [uploadMessage, setUploadMessage] = useState("Select a video to upload");
   const [processing, setProcessing] = useState(false);
   const [output, setOutput] = useState<CleanupProcessResult | null>(null);
   const [localError, setLocalError] = useState("");
+  const [propainterAvailability, setPropainterAvailability] = useState<ProPainterAvailability>("unchecked");
   const [originalPreviewError, setOriginalPreviewError] = useState("");
   const [outputPreviewError, setOutputPreviewError] = useState("");
 
-  async function uploadVideo(files: FileList | null) {
-    const file = files?.[0];
+  function openFilePicker() {
+    if (uploadState === "uploading") return;
+    fileInputRef.current?.click();
+  }
+
+  async function uploadVideo(file: File | undefined) {
     if (!file) return;
-    if (!file.type.startsWith("video/")) {
+    setSelectedFileName(file.name);
+    setUploadState("selected");
+    setUploadMessage(`Selected: ${file.name}`);
+    if (!isBrowserVideoFile(file)) {
+      setUploadState("error");
       setStatus("error");
+      setUploadMessage("Upload failed: Upload a valid local video file.");
       setLocalError("Upload a valid local video file.");
       return;
     }
@@ -1488,9 +1522,12 @@ function VideoCleanupTool() {
     form.append("file", file);
 
     try {
+      setUploadState("uploading");
       setStatus("uploading");
+      setUploadMessage("Uploading...");
       setLocalError("");
       setOutput(null);
+      setUploadedVideo(null);
       setOriginalPreviewError("");
       setOutputPreviewError("");
       const data = await apiRequest<UploadedCleanupVideo>("/api/video-cleanup/upload", {
@@ -1498,15 +1535,44 @@ function VideoCleanupTool() {
         body: form
       });
       setUploadedVideo(data);
+      setMode("preview");
+      setPropainterAvailability("unchecked");
       const defaultRegion = ratiosToRegion(defaultWatermarkRatios, data.width, data.height);
       setX(defaultRegion.x);
       setY(defaultRegion.y);
       setW(defaultRegion.w);
       setH(defaultRegion.h);
       setStatus("ready");
+      setUploadState("uploaded");
+      setUploadMessage("Upload complete");
     } catch (error) {
+      const message = errorText(error);
+      setUploadState("error");
       setStatus("error");
-      setLocalError(errorText(error));
+      setUploadMessage(`Upload failed: ${message}`);
+      setLocalError(message);
+    }
+  }
+
+  async function changeMode(nextMode: string) {
+    const checkSequence = ++modeCheckSequenceRef.current;
+    setMode(nextMode);
+    if (nextMode !== proPainterMode) {
+      setLocalError((message) => (message.includes("ProPainter") ? "" : message));
+      return;
+    }
+
+    setPropainterAvailability("checking");
+    setLocalError("");
+    try {
+      const data = await apiRequest<{ available: boolean }>("/api/video-cleanup/propainter-status");
+      if (checkSequence !== modeCheckSequenceRef.current) return;
+      setPropainterAvailability(data.available ? "available" : "unavailable");
+      if (!data.available) setLocalError(proPainterUiMessage);
+    } catch {
+      if (checkSequence !== modeCheckSequenceRef.current) return;
+      setPropainterAvailability("unavailable");
+      setLocalError(proPainterUiMessage);
     }
   }
 
@@ -1523,6 +1589,12 @@ function VideoCleanupTool() {
   }
 
   async function processVideo(nextMode = mode) {
+    if (nextMode === proPainterMode && propainterAvailability !== "available") {
+      setStatus(uploadedVideo ? "ready" : "idle");
+      setLocalError(proPainterUiMessage);
+      return;
+    }
+
     const validationError = validateRegionForUi();
     if (validationError) {
       setStatus("error");
@@ -1534,7 +1606,6 @@ function VideoCleanupTool() {
     setStatus("processing");
     setLocalError("");
     setOutputPreviewError("");
-    setOutput(null);
 
     try {
       const data = await apiRequest<CleanupProcessResult>(
@@ -1547,15 +1618,21 @@ function VideoCleanupTool() {
             mode: nextMode,
             region: { x, y, w, h },
             coverColor,
-            quality: nextMode === "ai-inpaint-propainter" ? quality : undefined
+            quality: nextMode === proPainterMode ? quality : undefined
           })
         }
       );
       setOutput(data);
       setStatus("success");
     } catch (error) {
-      setStatus("error");
-      setLocalError(errorText(error));
+      if (error instanceof ClientApiError && error.code === "PROPAINTER_NOT_INSTALLED") {
+        setStatus("ready");
+        setPropainterAvailability("unavailable");
+        setLocalError(proPainterUiMessage);
+      } else {
+        setStatus("error");
+        setLocalError(errorText(error));
+      }
     } finally {
       setProcessing(false);
     }
@@ -1595,6 +1672,7 @@ function VideoCleanupTool() {
   }
 
   const actionsDisabled = processing || !uploadedVideo || status === "uploading";
+  const propainterProcessDisabled = mode === proPainterMode && propainterAvailability !== "available";
   const outputTitle = output?.mode === "preview" ? "Preview Output" : "Processed Output";
   const region = { x, y, w, h };
   const ratios = uploadedVideo ? regionToRatios(region, uploadedVideo.width, uploadedVideo.height) : defaultWatermarkRatios;
@@ -1611,36 +1689,72 @@ function VideoCleanupTool() {
           </div>
           <div className="space-y-4">
             <Field label="Upload Local Video">
-              <Label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border bg-background text-sm text-foreground">
+              <input
+                ref={fileInputRef}
+                id="video-cleanup-upload-input"
+                data-testid="video-cleanup-upload-input"
+                type="file"
+                accept="video/*"
+                className="sr-only"
+                aria-label="Choose a local video to upload"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  void uploadVideo(file);
+                  event.target.value = "";
+                }}
+              />
+              <Button
+                type="button"
+                data-testid="video-cleanup-upload-button"
+                variant="outline"
+                className="h-11 w-full"
+                onClick={openFilePicker}
+                disabled={uploadState === "uploading"}
+              >
                 <Film className="h-4 w-4" />
-                Upload Video
-                <input
-                  type="file"
-                  accept="video/*"
-                  className="hidden"
-                  onChange={(event) => uploadVideo(event.target.files)}
-                />
-              </Label>
+                {uploadState === "uploading" ? "Uploading..." : "Upload Video"}
+              </Button>
+              <div
+                data-testid="video-cleanup-upload-status"
+                className={cn(
+                  "mt-2 rounded-md border p-2 text-sm",
+                  uploadState === "error"
+                    ? "border-destructive/30 text-destructive"
+                    : uploadState === "uploaded"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                      : "bg-muted/50 text-muted-foreground"
+                )}
+              >
+                <div>{uploadMessage}</div>
+                {selectedFileName ? <div className="mt-1 break-all text-xs">File: {selectedFileName}</div> : null}
+                {uploadedVideo ? (
+                  <div className="mt-1 text-xs">
+                    {uploadedVideo.width}x{uploadedVideo.height}
+                    {uploadedVideo.duration ? ` · ${formatDuration(uploadedVideo.duration)}` : ""}
+                  </div>
+                ) : null}
+              </div>
             </Field>
             <Field label="Mode">
-              <Select value={mode} onChange={(event) => setMode(event.target.value)}>
-                <option value="preview">preview</option>
-                <option value="delogo">delogo</option>
-                <option value="blur">blur</option>
-                <option value="cover">cover</option>
-                <option value="crop">crop</option>
+              <Select value={mode} onChange={(event) => void changeMode(event.target.value)}>
+                <option value="preview">Preview</option>
+                <option value="crop">Crop Rescale</option>
+                <option value="cover">Cover Patch</option>
+                <option value="blur">Soft Blur</option>
+                <option value="delogo">Delogo</option>
                 <option value="ai-inpaint-propainter">AI Inpaint - ProPainter</option>
               </Select>
             </Field>
             <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
-              Use Preview mode first to confirm the selected box covers the watermark.
+              Start with Preview to confirm the selected region. Use Crop Rescale, Cover Patch, Soft Blur, or Delogo
+              for local processing. ProPainter requires optional local setup.
             </div>
             {mode === "cover" ? (
               <Field label="Cover Color">
                 <Input value={coverColor} onChange={(event) => setCoverColor(event.target.value)} />
               </Field>
             ) : null}
-            {mode === "ai-inpaint-propainter" ? (
+            {mode === proPainterMode ? (
               <div className="space-y-3">
                 <Field label="ProPainter Quality">
                   <Select value={quality} onChange={(event) => setQuality(event.target.value as typeof quality)}>
@@ -1650,8 +1764,11 @@ function VideoCleanupTool() {
                   </Select>
                 </Field>
                 <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-                  AI Inpaint - ProPainter is optional and requires a local ProPainter setup. If it is not installed,
-                  processing returns a clear setup error and the other modes continue to work.
+                  {propainterAvailability === "checking"
+                    ? "Checking optional local ProPainter setup..."
+                    : propainterAvailability === "available"
+                      ? "ProPainter is configured for local processing."
+                      : proPainterUiMessage}
                 </div>
                 <div className="rounded-md border bg-white p-3 text-xs text-muted-foreground">
                   <div className="font-medium text-foreground">Local setup after optional shell checks pass</div>
@@ -1725,7 +1842,7 @@ PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python`}
               <Button variant="outline" onClick={() => processVideo("preview")} disabled={actionsDisabled}>
                 {processing ? "Working..." : "Generate Preview"}
               </Button>
-              <Button onClick={() => processVideo(mode)} disabled={actionsDisabled}>
+              <Button onClick={() => processVideo(mode)} disabled={actionsDisabled || propainterProcessDisabled}>
                 {processing ? "Working..." : "Process Video"}
               </Button>
             </div>
@@ -1733,6 +1850,7 @@ PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python`}
           <div className="space-y-3 rounded-md border bg-white p-3 text-sm">
             <div className="text-xs text-muted-foreground">Current status</div>
             <div className="mt-1 font-medium">{status}</div>
+            <div className="text-xs text-muted-foreground">Upload: {uploadState}</div>
             {localError ? (
               <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
                 <AlertTriangle className="h-4 w-4" />
@@ -2100,6 +2218,11 @@ function regionToRatios(region: CleanupRegion, width: number, height: number) {
 function clampRegionNumber(value: number, max?: number) {
   if (!Number.isFinite(value)) return 1;
   return Math.max(1, Math.min(Math.round(value), max || Number.MAX_SAFE_INTEGER));
+}
+
+function isBrowserVideoFile(file: File) {
+  const name = file.name.toLowerCase();
+  return file.type.startsWith("video/") || browserVideoExtensions.some((extension) => name.endsWith(extension));
 }
 
 function formatPercent(value: number) {

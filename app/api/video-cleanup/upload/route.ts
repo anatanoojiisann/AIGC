@@ -1,16 +1,20 @@
 import { errorJson, okJson } from "@/lib/api-response";
 import { saveUploadedCleanupVideo } from "@/lib/video-cleanup/local-store";
 import { VideoCleanupError } from "@/lib/video/ffmpeg";
-import { cleanupErrorResponse } from "../_shared";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
+    const contentType = request.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().includes("multipart/form-data")) {
+      return errorJson("UPLOAD_FAILED", "Upload must use multipart/form-data.", 400);
+    }
+
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File)) {
-      return errorJson("VALIDATION_ERROR", "Upload one video file.", 400);
+      return errorJson("UPLOAD_FAILED", "Upload one video file in the file field.", 400);
     }
 
     const { record, previewUrl } = await saveUploadedCleanupVideo(file);
@@ -23,7 +27,14 @@ export async function POST(request: Request) {
       duration: record.metadata.duration
     });
   } catch (error) {
-    if (error instanceof VideoCleanupError) return cleanupErrorResponse(error);
-    return cleanupErrorResponse(error);
+    const message = error instanceof Error ? error.message : "Upload failed.";
+    console.error("[video-cleanup/upload] upload failed", {
+      message,
+      code: error instanceof VideoCleanupError ? error.code : "UPLOAD_FAILED"
+    });
+    if (error instanceof VideoCleanupError) {
+      return errorJson("UPLOAD_FAILED", message, 400);
+    }
+    return errorJson("UPLOAD_FAILED", message, 500);
   }
 }
