@@ -1554,7 +1554,7 @@ function VideoCleanupTool() {
     }
   }
 
-  async function changeMode(nextMode: string) {
+  const changeMode = useCallback(async (nextMode: string) => {
     const checkSequence = ++modeCheckSequenceRef.current;
     setMode(nextMode);
     if (nextMode !== proPainterMode) {
@@ -1567,16 +1567,29 @@ function VideoCleanupTool() {
     try {
       const data = await apiRequest<{ available: boolean }>("/api/video-cleanup/propainter-status");
       if (checkSequence !== modeCheckSequenceRef.current) return;
-      setPropainterAvailability(data.available ? "available" : "unavailable");
-      if (!data.available) setLocalError(proPainterUiMessage);
+      if (data.available) {
+        setPropainterAvailability("available");
+        return;
+      }
+      setPropainterAvailability("unavailable");
+      setMode("preview");
+      setStatus(uploadedVideo ? "ready" : "idle");
     } catch {
       if (checkSequence !== modeCheckSequenceRef.current) return;
       setPropainterAvailability("unavailable");
-      setLocalError(proPainterUiMessage);
+      setMode("preview");
+      setStatus(uploadedVideo ? "ready" : "idle");
     }
-  }
+  }, [uploadedVideo]);
 
-  function validateRegionForUi() {
+  useEffect(() => {
+    // Handle a retained client-side selection after a hot reload without probing local modes.
+    if (mode === proPainterMode && propainterAvailability === "unchecked") {
+      void changeMode(proPainterMode);
+    }
+  }, [changeMode, mode, propainterAvailability]);
+
+  function readinessError(nextMode: string) {
     if (!uploadedVideo) return "Upload a local video before processing.";
     const values = { x, y, w, h };
     const invalid = Object.entries(values).find(([, value]) => !Number.isFinite(value) || value <= 0);
@@ -1585,19 +1598,16 @@ function VideoCleanupTool() {
       return `Selected region must stay inside the uploaded video (${uploadedVideo.width}x${uploadedVideo.height}).`;
     }
     if (!confirmedRights) return "Confirm that you own this video or have permission to edit it before processing.";
+    if (nextMode === proPainterMode && propainterAvailability !== "available") {
+      return proPainterUiMessage;
+    }
     return "";
   }
 
   async function processVideo(nextMode = mode) {
-    if (nextMode === proPainterMode && propainterAvailability !== "available") {
-      setStatus(uploadedVideo ? "ready" : "idle");
-      setLocalError(proPainterUiMessage);
-      return;
-    }
-
-    const validationError = validateRegionForUi();
+    const validationError = readinessError(nextMode);
     if (validationError) {
-      setStatus("error");
+      setStatus(uploadedVideo ? "ready" : "idle");
       setLocalError(validationError);
       return;
     }
@@ -1628,7 +1638,8 @@ function VideoCleanupTool() {
       if (error instanceof ClientApiError && error.code === "PROPAINTER_NOT_INSTALLED") {
         setStatus("ready");
         setPropainterAvailability("unavailable");
-        setLocalError(proPainterUiMessage);
+        setMode("preview");
+        setLocalError("");
       } else {
         setStatus("error");
         setLocalError(errorText(error));
@@ -1671,8 +1682,10 @@ function VideoCleanupTool() {
     }
   }
 
-  const actionsDisabled = processing || !uploadedVideo || status === "uploading";
-  const propainterProcessDisabled = mode === proPainterMode && propainterAvailability !== "available";
+  const previewDisabledReason = processing ? "Processing is already running." : readinessError("preview");
+  const processDisabledReason = processing ? "Processing is already running." : readinessError(mode);
+  const previewDisabled = Boolean(previewDisabledReason);
+  const processDisabled = Boolean(processDisabledReason);
   const outputTitle = output?.mode === "preview" ? "Preview Output" : "Processed Output";
   const region = { x, y, w, h };
   const ratios = uploadedVideo ? regionToRatios(region, uploadedVideo.width, uploadedVideo.height) : defaultWatermarkRatios;
@@ -1742,7 +1755,9 @@ function VideoCleanupTool() {
                 <option value="cover">Cover Patch</option>
                 <option value="blur">Soft Blur</option>
                 <option value="delogo">Delogo</option>
-                <option value="ai-inpaint-propainter">AI Inpaint - ProPainter</option>
+                <option value="ai-inpaint-propainter" disabled={propainterAvailability === "unavailable"}>
+                  AI Inpaint - ProPainter{propainterAvailability === "unavailable" ? " (Setup required)" : ""}
+                </option>
               </Select>
             </Field>
             <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
@@ -1839,13 +1854,22 @@ PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python`}
               <span>I confirm I own this video or have permission to edit it.</span>
             </Label>
             <div className="grid gap-2 sm:grid-cols-2">
-              <Button variant="outline" onClick={() => processVideo("preview")} disabled={actionsDisabled}>
+              <Button variant="outline" onClick={() => processVideo("preview")} disabled={previewDisabled}>
                 {processing ? "Working..." : "Generate Preview"}
               </Button>
-              <Button onClick={() => processVideo(mode)} disabled={actionsDisabled || propainterProcessDisabled}>
+              <Button onClick={() => processVideo(mode)} disabled={processDisabled}>
                 {processing ? "Working..." : "Process Video"}
               </Button>
             </div>
+            {processDisabledReason ? (
+              <div className="rounded-md border bg-muted/50 p-3 text-xs text-muted-foreground">
+                Process Video disabled: {processDisabledReason}
+              </div>
+            ) : (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+                Ready for local video processing.
+              </div>
+            )}
           </div>
           <div className="space-y-3 rounded-md border bg-white p-3 text-sm">
             <div className="text-xs text-muted-foreground">Current status</div>

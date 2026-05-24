@@ -108,6 +108,40 @@ test("video cleanup CLI preview and delogo outputs are generated", async () => {
   }
 });
 
+test("video cleanup delogo handles edge-touching regions", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "aigc-video-cleanup-edge-delogo-"));
+  try {
+    const input = await createFixtureVideo(directory);
+    const output = path.join(directory, "edge-delogo.mp4");
+
+    const result = await run("node", [
+      "--import",
+      "tsx",
+      "scripts/video-cleanup.ts",
+      "--input",
+      input,
+      "--output",
+      output,
+      "--mode",
+      "delogo",
+      "--x",
+      "240",
+      "--y",
+      "140",
+      "--w",
+      "80",
+      "--h",
+      "40"
+    ]);
+
+    assert.match(result.stdout, /"ok": true/);
+    assert.match(result.stdout, /delogo=x=240:y=140:w=78:h=38:show=0/);
+    await assertFileGenerated(output);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("video cleanup CLI ProPainter mode returns clean setup error when disabled", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "aigc-video-propainter-disabled-"));
   try {

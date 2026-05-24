@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "fs";
+import path from "path";
 import { runVideoCleanupJob, VideoCleanupError, type VideoCleanupMode } from "../lib/video/ffmpeg";
 
 type CliArgs = {
@@ -12,6 +14,21 @@ type CliArgs = {
   dryRun?: boolean;
   quality?: string;
 };
+
+function loadEnvLocal() {
+  const envPath = path.resolve(process.cwd(), ".env.local");
+  if (!existsSync(envPath)) return;
+
+  for (const rawLine of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
+  }
+}
 
 function readArgs(argv: string[]) {
   const args: CliArgs = {};
@@ -58,6 +75,7 @@ function requiredNumber(args: CliArgs, name: "x" | "y" | "w" | "h") {
 }
 
 async function main() {
+  loadEnvLocal();
   const args = readArgs(process.argv.slice(2));
   const result = await runVideoCleanupJob({
     input: required(args, "input"),

@@ -2,50 +2,69 @@
 
 ## What This Mode Does
 
-`ai-inpaint-propainter` is an optional local Video Cleanup mode for videos you own, generated yourself, or have permission to edit. It creates a mask from the selected rectangle and sends the video plus mask to a local ProPainter checkout.
+`ai-inpaint-propainter` is an optional local Video Cleanup mode for videos you own, generated yourself, or have permission to edit. The AIGC app creates a rectangular mask from the selected watermark/cleanup region and asks a local ProPainter checkout to inpaint that masked area.
 
-If ProPainter is not configured, the app still works and returns a structured `PROPAINTER_NOT_INSTALLED` error for this mode only. Existing FFmpeg modes continue to work.
+If ProPainter is missing or incomplete, the app must still build and run. Only AI Inpaint - ProPainter returns `PROPAINTER_NOT_INSTALLED`; local FFmpeg modes such as Preview, Crop Rescale, Cover Patch, Soft Blur, and Delogo continue to work.
 
-## License And Commercial Use Warning
+## License And Non-Commercial Warning
 
-ProPainter is a third-party project with its own license, model terms, and dependency requirements. Review the upstream license before using it, especially for commercial work. This project does not include ProPainter code, weights, or models.
+ProPainter is a third-party project with its own license, model terms, and dependency requirements. The official code and models are for non-commercial use unless you obtain permission from the rights holder. Review the upstream ProPainter license and model terms before using this mode.
 
-Do not use this feature to bypass platform attribution, copyright marks, paywalls, credits, login restrictions, or access controls.
+Do not use Video Cleanup or ProPainter to bypass platform attribution, copyright marks, paywalls, credits, login restrictions, or access controls.
+
+## Expected Local Paths
+
+The scripts detect paths when possible, but this project is set up around these defaults:
+
+```bash
+AIGC project: /Users/steven-mac2/Documents/AIGC
+ProPainter repo: /Users/steven-mac2/Documents/ProPainter
+Conda env: propainter
+Python path: /opt/miniconda3/envs/propainter/bin/python
+```
 
 ## Required Environment
 
-- Python compatible with your ProPainter checkout
-- PyTorch installed according to your hardware
+- macOS terminal access
+- Conda or Miniforge
+- Python environment named `propainter`
+- PyTorch installed for your hardware
+- `cv2` / OpenCV available in the environment
 - FFmpeg and FFprobe available in `PATH`
-- A local ProPainter repository path
-- Any ProPainter model weights required by that repository
+- Local ProPainter repository
+- ProPainter model weights under the ProPainter checkout, usually `weights/`
 
-## Environment Variables
+## Setup Scripts
 
-Keep ProPainter disabled until the optional worker shell has passed the missing-state checks. After the local ProPainter environment is installed, set these in `.env.local`:
+From the AIGC repo:
 
 ```bash
-PROPAINTER_ENABLED=true
-PROPAINTER_REPO_PATH=/Users/steven-mac2/Documents/ProPainter
-PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python
+cd /Users/steven-mac2/Documents/AIGC
+bash workers/propainter/setup-macos.sh
+bash workers/propainter/check-env.sh
 ```
 
-Do not commit `.env.local`.
+`setup-macos.sh` is safe to rerun. It detects Conda, clones ProPainter if missing, creates the `propainter` environment if missing, and installs `requirements.txt` when available.
+
+The setup script does not download model weights because upstream URLs and license terms can change. Follow the official ProPainter README for current weight download links.
 
 ## Install Conda
 
-Use Miniconda or Miniforge. On Apple Silicon Macs, Miniforge is often the easiest route:
+If `conda` is missing, install Miniforge or Miniconda. Miniforge is often the simplest macOS option:
 
 ```bash
 brew install --cask miniforge
+```
+
+Or download Miniconda from the official Conda site. After installing, open a new terminal and verify:
+
+```bash
 conda --version
 ```
 
-If `conda` is not found after installation, open a new terminal or run the shell initialization command suggested by the installer.
-
 ## Clone ProPainter
 
-Clone ProPainter outside this app repository:
+If the setup script cannot clone the repo, run:
 
 ```bash
 cd /Users/steven-mac2/Documents
@@ -53,29 +72,25 @@ git clone https://github.com/sczhou/ProPainter.git
 cd /Users/steven-mac2/Documents/ProPainter
 ```
 
-Review the upstream license and model terms before using it.
+Review the upstream license before continuing.
 
-## Create The `propainter` Env
+## Create The Conda Environment
 
-Create a separate environment so ProPainter dependencies do not affect this Next.js app:
+The setup script uses Python 3.8 by default:
 
 ```bash
-conda create -n propainter python=3.10 -y
+conda create -n propainter python=3.8 -y
 conda activate propainter
 python --version
 ```
 
-Confirm the Python path matches the app config:
+Check the actual Python path:
 
 ```bash
 which python
 ```
 
-Expected path:
-
-```bash
-/opt/miniconda3/envs/propainter/bin/python
-```
+Use that path for `PROPAINTER_PYTHON`.
 
 ## Install Requirements
 
@@ -88,24 +103,35 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Install PyTorch according to the upstream ProPainter instructions and your hardware. On Macs without CUDA, expect CPU or MPS behavior to be slower and potentially less compatible than CUDA examples.
+Then verify the imports that AIGC checks:
+
+```bash
+python -c "import torch; import cv2; print('ok')"
+```
+
+If PyTorch installation fails on macOS, install the Mac-compatible PyTorch build using the official PyTorch selector, then rerun the ProPainter requirements.
 
 ## Download Weights
 
-Download the model weights required by the upstream ProPainter project and place them in the paths that ProPainter expects. The exact filenames and directories can change upstream, so follow the ProPainter README for the current model download links.
+Download the ProPainter model weights from the upstream ProPainter README and place them where that project expects them. AIGC checks for model files under:
 
-After downloading weights, keep them under `/Users/steven-mac2/Documents/ProPainter` or the upstream-recommended model directory. Do not commit model weights to this app repo.
+```bash
+/Users/steven-mac2/Documents/ProPainter/weights
+```
+
+Common model extensions are `.pth`, `.pt`, `.ckpt`, and `.safetensors`.
+
+Do not commit model weights to this repository.
 
 ## Configure `.env.local`
 
-In this app repo:
+In the AIGC repo:
 
 ```bash
 cd /Users/steven-mac2/Documents/AIGC
-cp .env.example .env.local
 ```
 
-Then set:
+Add or update:
 
 ```bash
 PROPAINTER_ENABLED=true
@@ -113,22 +139,38 @@ PROPAINTER_REPO_PATH=/Users/steven-mac2/Documents/ProPainter
 PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python
 ```
 
-Restart the app after editing `.env.local`.
+If your detected Python path is different, use the detected path instead.
 
-## Setup Steps
+Do not commit `.env.local`.
 
-1. Install FFmpeg.
-2. Install Conda or Miniforge.
-3. Clone ProPainter locally from its official source.
-4. Create and activate the `propainter` Conda environment.
-5. Install ProPainter dependencies.
-6. Download ProPainter weights following the upstream instructions.
-7. Set `PROPAINTER_ENABLED=true`.
-8. Set `PROPAINTER_REPO_PATH` to the local ProPainter checkout.
-9. Set `PROPAINTER_PYTHON` to the Python executable inside that environment.
-10. Restart the Next.js app.
+## Restart Next.js
 
-## CLI Test Command
+After changing `.env.local`, stop the running app and start it again:
+
+```bash
+cd /Users/steven-mac2/Documents/AIGC
+PORT=3003 npm run dev
+```
+
+## Check The Environment
+
+Run:
+
+```bash
+bash workers/propainter/check-env.sh
+```
+
+If ProPainter is ready, it prints pass results and exits successfully. If it is incomplete, it prints `PROPAINTER_NOT_INSTALLED` and lists the missing setup items.
+
+## CLI Worker Test
+
+Run:
+
+```bash
+bash workers/propainter/test-worker.sh
+```
+
+This uses:
 
 ```bash
 npm run video:watermark -- \
@@ -136,46 +178,105 @@ npm run video:watermark -- \
   --output ./storage/watermark-verification/output-propainter.mp4 \
   --mode ai-inpaint-propainter \
   --x 20 --y 20 --w 80 --h 30 \
-  --quality balanced
+  --quality fast
 ```
 
-When ProPainter is not configured, the command should return:
+If ProPainter is missing, the script returns a clean `PROPAINTER_NOT_INSTALLED` result and prints the missing setup items. If ProPainter is installed, it verifies that `output-propainter.mp4` exists, is readable by FFprobe, and has a different SHA256 hash from the input.
 
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "PROPAINTER_NOT_INSTALLED",
-    "message": "ProPainter is optional and not configured. Use another mode or install ProPainter."
-  }
-}
+## Browser Test
+
+1. Start the app:
+
+```bash
+PORT=3003 npm run dev
 ```
+
+2. Open:
+
+```text
+http://localhost:3003/video-cleanup
+```
+
+3. Upload a short local video.
+4. Confirm the default mode is Preview.
+5. Confirm Preview and Delogo still work.
+6. Select AI Inpaint - ProPainter.
+7. Choose Fast quality.
+8. Process the video.
+9. Confirm processed output appears and Download Result works.
 
 ## Troubleshooting
 
-### Missing Model
+### Conda Missing
 
-Download the required ProPainter model weights from the upstream project and place them where that project expects them.
+Install Miniforge or Miniconda, then open a new terminal. Run:
 
-### Missing Dependency
+```bash
+conda --version
+```
 
-Activate the ProPainter Python environment and reinstall the upstream dependencies. Also verify `PROPAINTER_PYTHON` points at that environment.
+### Python Path Wrong
+
+Activate the environment and inspect the actual path:
 
 ```bash
 conda activate propainter
-python -m pip install -r /Users/steven-mac2/Documents/ProPainter/requirements.txt
+which python
 ```
 
-### OOM
+Update `PROPAINTER_PYTHON` in `.env.local`.
 
-Try the `fast` quality option, reduce video resolution, shorten the clip, or use a machine with more GPU memory.
+### Weights Missing
 
-### Slow Inference
+Follow the upstream ProPainter README to download weights and place them under:
 
-AI inpainting is much slower than FFmpeg filters. Try `fast` quality first and test on short clips before processing full videos.
+```bash
+/Users/steven-mac2/Documents/ProPainter/weights
+```
 
-### Mac Without GPU
+### Torch Import Failure
 
-CPU-only inference may be very slow or unsupported depending on your ProPainter setup. Use FFmpeg `preview`, `cover`, `blur`, `crop`, or `delogo` modes when ProPainter is unavailable.
+Activate the environment and install the correct PyTorch build for your Mac:
 
-If CUDA-specific packages fail on macOS, install the Mac-compatible PyTorch build from the official PyTorch selector and test ProPainter on a very short clip first.
+```bash
+conda activate propainter
+python -c "import torch"
+```
+
+Use the official PyTorch install selector if the ProPainter requirements install a CUDA-only build that does not work on your Mac.
+
+### CV2 Import Failure
+
+Install OpenCV into the environment:
+
+```bash
+conda activate propainter
+python -m pip install opencv-python
+```
+
+### FFmpeg Missing
+
+Install FFmpeg:
+
+```bash
+brew install ffmpeg
+```
+
+Then verify:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
+
+### Mac Without NVIDIA GPU Is Slow
+
+Most ProPainter examples are designed around CUDA-capable GPUs. On a Mac without NVIDIA GPU support, inference can be slow or may require CPU/MPS-compatible dependency adjustments. Test with a very short clip and `--quality fast`.
+
+### OOM Or Memory Issues
+
+Use shorter clips, lower resolution, `--quality fast`, or a machine with more available GPU/CPU memory.
+
+### ProPainter Unavailable But Local Modes Still Work
+
+This is expected. Preview, Crop Rescale, Cover Patch, Soft Blur, and Delogo are local FFmpeg modes and should continue to work even when ProPainter is not installed.

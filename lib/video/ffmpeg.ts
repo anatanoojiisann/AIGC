@@ -1,4 +1,4 @@
-import { access, mkdir, stat } from "fs/promises";
+import { access, mkdir, readdir, stat } from "fs/promises";
 import { constants as fsConstants } from "fs";
 import path from "path";
 import { spawn } from "child_process";
@@ -50,6 +50,9 @@ export type ProPainterAvailability = {
   available: boolean;
   code?: "PROPAINTER_NOT_INSTALLED";
   message?: string;
+  missing?: string[];
+  repoPath?: string;
+  pythonPath?: string;
 };
 
 export class VideoCleanupError extends Error {
@@ -66,6 +69,8 @@ export class VideoCleanupError extends Error {
 
 const supportedExtensions = new Set([".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"]);
 const propainterUnavailableMessage = "ProPainter is optional and not configured. Use another mode or install ProPainter.";
+const propainterEntrypointCandidates = ["inference_propainter.py", "inference/propainter.py", "scripts/inference_propainter.py"];
+const propainterWeightExtensions = new Set([".pth", ".pt", ".ckpt", ".safetensors"]);
 
 function commandMissing(command: string) {
   if (command !== "ffmpeg" && command !== "ffprobe") {
@@ -230,6 +235,25 @@ function even(value: number) {
   return Math.max(2, Math.floor(value / 2) * 2);
 }
 
+function delogoSafeRegion(region: VideoCleanupRegion, video: VideoMetadata) {
+  const margin = 1;
+  const x = Math.min(Math.max(region.x, margin), Math.max(margin, video.width - margin - 2));
+  const y = Math.min(Math.max(region.y, margin), Math.max(margin, video.height - margin - 2));
+  const maxW = video.width - x - margin;
+  const maxH = video.height - y - margin;
+  const w = even(Math.min(region.w, maxW));
+  const h = even(Math.min(region.h, maxH));
+
+  if (w < 2 || h < 2 || x + w >= video.width || y + h >= video.height) {
+    throw new VideoCleanupError(
+      "INVALID_COORDINATES",
+      "Delogo mode needs a selected region with a small margin inside the video frame. Move the box slightly away from the edge or use Cover Patch."
+    );
+  }
+
+  return { x, y, w, h };
+}
+
 function cropFilter(region: VideoCleanupRegion, video: VideoMetadata) {
   const distances = [
     { edge: "left", value: region.x, limit: Math.max(24, video.width * 0.08) },
@@ -291,9 +315,10 @@ export function buildVideoCleanupFilter({
   }
 
   if (mode === "delogo") {
+    const safeRegion = delogoSafeRegion(region, video);
     return {
       type: "vf" as const,
-      value: `delogo=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:show=0`
+      value: `delogo=x=${safeRegion.x}:y=${safeRegion.y}:w=${safeRegion.w}:h=${safeRegion.h}:show=0`
     };
   }
 
@@ -352,10 +377,11 @@ function buildArgs(input: string, output: string, mode: VideoCleanupMode, region
   return { args, filter: filter.value };
 }
 
-function propainterNotInstalled() {
+function propainterNotInstalled(details?: unknown) {
   return new VideoCleanupError(
     "PROPAINTER_NOT_INSTALLED",
-    propainterUnavailableMessage
+    propainterUnavailableMessage,
+    details
   );
 }
 
@@ -380,7 +406,7 @@ async function assertExecutable(filePath: string) {
   }
 }
 
-async function firstExistingFile(candidates: string[]) {
+async function firstExistingFileOrNull(candidates: string[]) {
   for (const candidate of candidates) {
     try {
       const info = await stat(candidate);
@@ -389,27 +415,87 @@ async function firstExistingFile(candidates: string[]) {
       // Try the next common ProPainter entrypoint.
     }
   }
-  throw propainterNotInstalled();
+  return null;
+}
+
+async function directoryExists(directory: string) {
+  try {
+    const info = await stat(directory);
+    return info.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function executableExists(filePath: string) {
+  try {
+    const info = await stat(filePath);
+    if (!info.isFile()) return false;
+    await access(filePath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasPropainterWeights(directory: string, depth = 0): Promise<boolean> {
+  if (depth > 4) return false;
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isFile() && propainterWeightExtensions.has(path.extname(entry.name).toLowerCase())) return true;
+    if (entry.isDirectory() && (await hasPropainterWeights(entryPath, depth + 1))) return true;
+  }
+  return false;
+}
+
+async function assertPythonImports(pythonPath: string) {
+  try {
+    await runCommand(pythonPath, ["-c", "import torch; import cv2"]);
+  } catch (error) {
+    if (error instanceof VideoCleanupError) {
+      throw propainterNotInstalled({
+        missing: ["Python cannot import torch and cv2. Install ProPainter requirements in the configured environment."],
+        stderr: error.details
+      });
+    }
+    throw error;
+  }
 }
 
 async function getPropainterEnvironment() {
-  if (process.env.PROPAINTER_ENABLED !== "true") {
-    throw propainterNotInstalled();
-  }
-
+  const missing: string[] = [];
+  if (process.env.PROPAINTER_ENABLED !== "true") missing.push("Set PROPAINTER_ENABLED=true.");
   const repoPath = process.env.PROPAINTER_REPO_PATH?.trim();
   const pythonPath = process.env.PROPAINTER_PYTHON?.trim();
-  if (!repoPath || !pythonPath) throw propainterNotInstalled();
+  if (!repoPath) missing.push("Set PROPAINTER_REPO_PATH to your local ProPainter checkout.");
+  if (!pythonPath) missing.push("Set PROPAINTER_PYTHON to the Python executable in the propainter environment.");
+
+  if (missing.length > 0 || !repoPath || !pythonPath) throw propainterNotInstalled({ missing });
 
   const resolvedRepoPath = path.resolve(process.cwd(), repoPath);
   const resolvedPythonPath = path.resolve(process.cwd(), pythonPath);
+  if (!(await directoryExists(resolvedRepoPath))) missing.push(`ProPainter repo not found: ${resolvedRepoPath}`);
+  if (!(await executableExists(resolvedPythonPath))) missing.push(`ProPainter Python not executable: ${resolvedPythonPath}`);
+
+  const script = await firstExistingFileOrNull(propainterEntrypointCandidates.map((candidate) => path.join(resolvedRepoPath, candidate)));
+  if (!script) missing.push(`ProPainter inference entrypoint not found. Expected one of: ${propainterEntrypointCandidates.join(", ")}`);
+
+  const weightsDir = path.join(resolvedRepoPath, "weights");
+  if (!(await hasPropainterWeights(weightsDir))) {
+    missing.push(`ProPainter weights not found under ${weightsDir}. Download weights from the upstream ProPainter README.`);
+  }
+
+  if (missing.length > 0 || !script) throw propainterNotInstalled({ missing, repoPath: resolvedRepoPath, pythonPath: resolvedPythonPath });
   await assertDirectory(resolvedRepoPath);
   await assertExecutable(resolvedPythonPath);
-  const script = await firstExistingFile([
-    path.join(resolvedRepoPath, "inference_propainter.py"),
-    path.join(resolvedRepoPath, "inference", "propainter.py"),
-    path.join(resolvedRepoPath, "scripts", "inference_propainter.py")
-  ]);
+  await assertPythonImports(resolvedPythonPath);
 
   return { resolvedRepoPath, resolvedPythonPath, script };
 }
@@ -420,10 +506,14 @@ export async function checkPropainterAvailability(): Promise<ProPainterAvailabil
     return { available: true };
   } catch (error) {
     if (error instanceof VideoCleanupError && error.code === "PROPAINTER_NOT_INSTALLED") {
+      const details = error.details as { missing?: string[]; repoPath?: string; pythonPath?: string } | undefined;
       return {
         available: false,
         code: "PROPAINTER_NOT_INSTALLED",
-        message: propainterUnavailableMessage
+        message: propainterUnavailableMessage,
+        missing: details?.missing,
+        repoPath: details?.repoPath,
+        pythonPath: details?.pythonPath
       };
     }
     throw error;

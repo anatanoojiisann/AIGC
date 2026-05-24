@@ -26,3 +26,8 @@ storage/browser-profiles/**
 playwright/.auth/**
 *.har
 *.zip
+AIGC-*.patch
+workers/propainter/**/*.pth
+workers/propainter/**/*.pt
+workers/propainter/**/*.ckpt
+workers/propainter/**/*.safetensors
