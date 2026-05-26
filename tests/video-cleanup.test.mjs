@@ -53,6 +53,35 @@ async function assertFileGenerated(filePath) {
   assert.ok(info.size > 0, `${filePath} should not be empty`);
 }
 
+function parseJsonPayload(output) {
+  const marker = output.includes('"ok"') ? output.lastIndexOf("{\n  \"ok\"") : output.indexOf("{");
+  const start = marker;
+  assert.notEqual(start, -1, `expected JSON payload in: ${output}`);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < output.length; index += 1) {
+    const char = output[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") inString = true;
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return JSON.parse(output.slice(start, index + 1));
+    }
+  }
+  throw new Error(`could not parse JSON payload in: ${output}`);
+}
+
 test("video cleanup CLI preview and delogo outputs are generated", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "aigc-video-cleanup-"));
   try {
@@ -182,7 +211,7 @@ test("video cleanup CLI ProPainter mode returns clean setup error when disabled"
     );
 
     assert.notEqual(result.code, 0);
-    const payload = JSON.parse(result.stderr);
+    const payload = parseJsonPayload(result.stderr);
     assert.equal(payload.ok, false);
     assert.equal(payload.error.code, "PROPAINTER_NOT_INSTALLED");
     assert.match(payload.error.message, /optional and not configured/);
@@ -219,7 +248,7 @@ test("video cleanup CLI missing input returns structured JSON", async () => {
       { allowFailure: true }
     );
     assert.notEqual(result.code, 0);
-    const payload = JSON.parse(result.stderr);
+    const payload = parseJsonPayload(result.stderr);
     assert.equal(payload.ok, false);
     assert.equal(payload.error.code, "INPUT_NOT_FOUND");
   } finally {

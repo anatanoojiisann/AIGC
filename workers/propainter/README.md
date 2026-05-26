@@ -94,19 +94,31 @@ Use that path for `PROPAINTER_PYTHON`.
 
 ## Install Requirements
 
-From the ProPainter repo:
+From the ProPainter repo, install the requirements except `av` and GUI OpenCV wheels, then install headless OpenCV:
 
 ```bash
 cd /Users/steven-mac2/Documents/ProPainter
 conda activate propainter
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+grep -Ev '^(av|opencv-python|opencv-contrib-python|opencv-python-headless)([<>= ].*)?$' requirements.txt > /tmp/propainter-requirements-aigc.txt
+python -m pip install -r /tmp/propainter-requirements-aigc.txt
+python -m pip uninstall -y opencv-python opencv-contrib-python
+python -m pip install opencv-python-headless
 ```
 
 Then verify the imports that AIGC checks:
 
 ```bash
 python -c "import torch; import cv2; print('ok')"
+```
+
+`av` is optional for this AIGC worker. Do not install `av` by default. The upstream requirements include `av`, but pip `av` plus pip OpenCV can bundle conflicting FFmpeg/AVFoundation dylibs on macOS.
+
+AIGC prefers the headless OpenCV wheel:
+
+```bash
+python -m pip uninstall -y opencv-python opencv-contrib-python
+python -m pip install opencv-python-headless
 ```
 
 If PyTorch installation fails on macOS, install the Mac-compatible PyTorch build using the official PyTorch selector, then rerun the ProPainter requirements.
@@ -251,7 +263,38 @@ Install OpenCV into the environment:
 
 ```bash
 conda activate propainter
-python -m pip install opencv-python
+python -m pip install opencv-python-headless
+```
+
+### CV2 / PyAV Duplicate `libavdevice` Warning
+
+If `check-env.sh` prints `AVFFrameReceiver`, `AVFAudioReceiver`, or `One of the duplicates must be removed or renamed`, the `cv2` and `av` Python wheels are both loading bundled FFmpeg/AVFoundation libraries. `av` is optional and should usually remain uninstalled. Prefer a clean package fix before touching dylib files manually:
+
+```bash
+conda activate propainter
+python -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless
+python -m pip install opencv-python-headless
+python -m pip uninstall -y av
+```
+
+Then run the direct diagnostic:
+
+```bash
+$PROPAINTER_PYTHON - <<'PY'
+import cv2
+print("cv2", cv2.__version__)
+try:
+    import av
+    print("av", av.__version__)
+except Exception as e:
+    print("av optional not installed:", e)
+PY
+```
+
+If you later need `av` for some separate workflow and warnings still appear, use one package family consistently, for example conda-forge OpenCV plus PyAV:
+
+```bash
+conda install -n propainter -c conda-forge opencv av -y
 ```
 
 ### FFmpeg Missing

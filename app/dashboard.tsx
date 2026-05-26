@@ -1494,11 +1494,22 @@ function VideoCleanupTool() {
   const [selectedFileName, setSelectedFileName] = useState("");
   const [uploadMessage, setUploadMessage] = useState("Select a video to upload");
   const [processing, setProcessing] = useState(false);
+  const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
+  const [processingElapsedSeconds, setProcessingElapsedSeconds] = useState(0);
+  const [processingMode, setProcessingMode] = useState("");
   const [output, setOutput] = useState<CleanupProcessResult | null>(null);
   const [localError, setLocalError] = useState("");
   const [propainterAvailability, setPropainterAvailability] = useState<ProPainterAvailability>("unchecked");
   const [originalPreviewError, setOriginalPreviewError] = useState("");
   const [outputPreviewError, setOutputPreviewError] = useState("");
+
+  useEffect(() => {
+    if (!processingStartedAt) return undefined;
+    const updateElapsed = () => setProcessingElapsedSeconds(Math.max(0, Math.floor((Date.now() - processingStartedAt) / 1000)));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [processingStartedAt]);
 
   function openFilePicker() {
     if (uploadState === "uploading") return;
@@ -1613,16 +1624,23 @@ function VideoCleanupTool() {
     }
 
     setProcessing(true);
+    setProcessingMode(nextMode);
+    setProcessingStartedAt(Date.now());
+    setProcessingElapsedSeconds(0);
     setStatus("processing");
     setLocalError("");
     setOutputPreviewError("");
 
+    let timeout: number | undefined;
     try {
+      const controller = new AbortController();
+      timeout = window.setTimeout(() => controller.abort(), nextMode === proPainterMode ? 600_000 : 120_000);
       const data = await apiRequest<CleanupProcessResult>(
         nextMode === "preview" ? "/api/video-cleanup/preview" : "/api/video-cleanup/process",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
           body: JSON.stringify({
             uploadedVideoId: uploadedVideo?.uploadedVideoId,
             mode: nextMode,
@@ -1635,6 +1653,11 @@ function VideoCleanupTool() {
       setOutput(data);
       setStatus("success");
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setStatus("error");
+        setLocalError(nextMode === proPainterMode ? "AI Inpaint timed out after 10 minutes. Try the smoke fixture or a smaller region." : "Processing timed out.");
+        return;
+      }
       if (error instanceof ClientApiError && error.code === "PROPAINTER_NOT_INSTALLED") {
         setStatus("ready");
         setPropainterAvailability("unavailable");
@@ -1645,7 +1668,9 @@ function VideoCleanupTool() {
         setLocalError(errorText(error));
       }
     } finally {
+      if (timeout) window.clearTimeout(timeout);
       setProcessing(false);
+      setProcessingStartedAt(null);
     }
   }
 
@@ -1875,6 +1900,13 @@ PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python`}
             <div className="text-xs text-muted-foreground">Current status</div>
             <div className="mt-1 font-medium">{status}</div>
             <div className="text-xs text-muted-foreground">Upload: {uploadState}</div>
+            {processing ? (
+              <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
+                <div>Processing {processingMode || "video"}...</div>
+                <div>Elapsed: {formatDuration(processingElapsedSeconds)}</div>
+                {processingMode === proPainterMode ? <div>AI Inpaint can be slow on Mac CPU.</div> : null}
+              </div>
+            ) : null}
             {localError ? (
               <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-white px-3 py-2 text-sm text-destructive">
                 <AlertTriangle className="h-4 w-4" />

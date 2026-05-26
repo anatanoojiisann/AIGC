@@ -97,6 +97,34 @@ else
   fail "python cannot import torch and cv2. Install ProPainter requirements in the propainter env."
 fi
 
+if [ -x "$PYTHON_PATH" ]; then
+  IMPORT_STDOUT="$(mktemp)"
+  IMPORT_STDERR="$(mktemp)"
+  "$PYTHON_PATH" - >"$IMPORT_STDOUT" 2>"$IMPORT_STDERR" <<'PY'
+import cv2
+print("cv2", cv2.__version__)
+try:
+    import av
+    print("av", av.__version__)
+except Exception as e:
+    print("av optional not installed:", e)
+PY
+  IMPORT_RESULT=$?
+  IMPORT_OUTPUT="$(cat "$IMPORT_STDOUT" "$IMPORT_STDERR")"
+  rm -f "$IMPORT_STDOUT" "$IMPORT_STDERR"
+  if [ "$IMPORT_RESULT" -ne 0 ]; then
+    fail "cv2 import diagnostic failed. Run: \$PROPAINTER_PYTHON - <<'PY' ... import cv2"
+    printf '%s\n' "$IMPORT_OUTPUT"
+  elif printf '%s\n' "$IMPORT_OUTPUT" | grep -Eq 'AVFFrameReceiver|AVFAudioReceiver|One of the duplicates must be removed or renamed|libavdevice'; then
+    fail "cv2/av duplicate libavdevice dylib conflict detected. Prefer opencv-python-headless or aligned conda-forge opencv/av packages."
+    printf '%s\n' "$IMPORT_OUTPUT"
+  else
+    printf 'pass: cv2 import diagnostic clean; av optional: %s\n' "$(printf '%s\n' "$IMPORT_OUTPUT" | tr '\n' '; ')"
+  fi
+else
+  fail "cv2 import diagnostic skipped because ProPainter Python is not executable."
+fi
+
 if command -v ffmpeg >/dev/null 2>&1; then
   pass "ffmpeg available: $(ffmpeg -version 2>/dev/null | head -1)"
 else
@@ -110,10 +138,16 @@ else
 fi
 
 WEIGHTS_DIR="${REPO_PATH}/weights"
-if [ -d "$WEIGHTS_DIR" ] && find "$WEIGHTS_DIR" -maxdepth 4 -type f \( -name '*.pth' -o -name '*.pt' -o -name '*.ckpt' -o -name '*.safetensors' \) 2>/dev/null | grep -q .; then
-  pass "ProPainter weights found under: $WEIGHTS_DIR"
+MISSING_WEIGHTS=()
+for weight in ProPainter.pth recurrent_flow_completion.pth raft-things.pth; do
+  if [ ! -f "${WEIGHTS_DIR}/${weight}" ]; then
+    MISSING_WEIGHTS+=("$weight")
+  fi
+done
+if [ -d "$WEIGHTS_DIR" ] && [ "${#MISSING_WEIGHTS[@]}" -eq 0 ]; then
+  pass "Required ProPainter weights found under: $WEIGHTS_DIR"
 else
-  fail "ProPainter weights missing under: $WEIGHTS_DIR"
+  fail "Required ProPainter weights missing under ${WEIGHTS_DIR}: ${MISSING_WEIGHTS[*]:-weights directory missing}"
 fi
 
 if [ -f "${AIGC_ROOT}/.env.local" ]; then

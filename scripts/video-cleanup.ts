@@ -15,10 +15,9 @@ type CliArgs = {
   quality?: string;
 };
 
-function loadEnvLocal() {
-  const envPath = path.resolve(process.cwd(), ".env.local");
-  if (!existsSync(envPath)) return;
-
+function loadEnvFile(fileName: ".env.local" | ".env") {
+  const envPath = path.resolve(process.cwd(), fileName);
+  if (!existsSync(envPath)) return false;
   for (const rawLine of readFileSync(envPath, "utf8").split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
@@ -28,6 +27,11 @@ function loadEnvLocal() {
     if (process.env[key] !== undefined) continue;
     process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
   }
+  return true;
+}
+
+function loadLocalEnvFiles() {
+  return [".env.local", ".env"].filter((fileName) => loadEnvFile(fileName as ".env.local" | ".env"));
 }
 
 function readArgs(argv: string[]) {
@@ -75,8 +79,12 @@ function requiredNumber(args: CliArgs, name: "x" | "y" | "w" | "h") {
 }
 
 async function main() {
-  loadEnvLocal();
+  const loadedEnvFiles = loadLocalEnvFiles();
   const args = readArgs(process.argv.slice(2));
+  if (args.mode === "ai-inpaint-propainter") {
+    process.stderr.write(`==> Loading env\n`);
+    process.stderr.write(`env loaded: ${loadedEnvFiles.length > 0 ? loadedEnvFiles.join(", ") : "none"}\n`);
+  }
   const result = await runVideoCleanupJob({
     input: required(args, "input"),
     output: required(args, "output"),
@@ -115,6 +123,7 @@ async function main() {
 main().catch((error: unknown) => {
   const code = error instanceof VideoCleanupError ? error.code : "PROCESSING_FAILED";
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${JSON.stringify({ ok: false, error: { code, message } }, null, 2)}\n`);
+  const details = error instanceof VideoCleanupError ? error.details : undefined;
+  process.stderr.write(`${JSON.stringify({ ok: false, error: { code, message, ...(details === undefined ? {} : { details }) } }, null, 2)}\n`);
   process.exitCode = 1;
 });

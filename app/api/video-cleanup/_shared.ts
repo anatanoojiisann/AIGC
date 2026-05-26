@@ -34,17 +34,20 @@ type CleanupBody = {
 
 export function cleanupErrorResponse(error: unknown) {
   if (error instanceof VideoCleanupError) {
-    const status =
-      error.code === "INPUT_NOT_FOUND"
-        ? 404
-        : error.code === "FFMPEG_NOT_FOUND"
-          ? 503
-          : error.code === "PROPAINTER_NOT_INSTALLED"
-            ? 200
-            : error.code === "PROCESSING_FAILED"
-              ? 500
-              : 400;
-    return errorJson(error.code as ApiErrorCode, error.message, status);
+    const statusByCode: Record<string, number> = {
+      FFMPEG_NOT_FOUND: 503,
+      INPUT_NOT_FOUND: 404,
+      PROCESSING_FAILED: 500,
+      PROPAINTER_DYLIB_CONFLICT: 503,
+      PROPAINTER_ENV_INVALID: 503,
+      PROPAINTER_INFERENCE_FAILED: 500,
+      PROPAINTER_MASK_FAILED: 500,
+      PROPAINTER_NOT_INSTALLED: 200,
+      PROPAINTER_OUTPUT_INVALID: 500,
+      PROPAINTER_TIMEOUT: 504
+    };
+    const status = statusByCode[error.code] || 400;
+    return errorJson(error.code as ApiErrorCode, error.message, status, error.details);
   }
 
   const code = isDatabaseError(error) ? "DATABASE_ERROR" : "INTERNAL_ERROR";

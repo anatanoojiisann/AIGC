@@ -56,7 +56,13 @@ fi
 
 if [ -f "${PROPAINTER_REPO_PATH}/requirements.txt" ]; then
   "$CONDA_BIN" run -n "$ENV_NAME" python -m pip install --upgrade pip
-  "$CONDA_BIN" run -n "$ENV_NAME" python -m pip install -r "${PROPAINTER_REPO_PATH}/requirements.txt"
+  FILTERED_REQUIREMENTS="$(mktemp)"
+  grep -Ev '^(av|opencv-python|opencv-contrib-python|opencv-python-headless)([<>= ].*)?$' "${PROPAINTER_REPO_PATH}/requirements.txt" > "$FILTERED_REQUIREMENTS"
+  "$CONDA_BIN" run -n "$ENV_NAME" python -m pip install -r "$FILTERED_REQUIREMENTS"
+  rm -f "$FILTERED_REQUIREMENTS"
+  printf '\nInstalling opencv-python-headless and leaving av uninstalled by default to avoid cv2/PyAV bundled libavdevice conflicts on macOS...\n'
+  "$CONDA_BIN" run -n "$ENV_NAME" python -m pip uninstall -y opencv-python opencv-contrib-python || true
+  "$CONDA_BIN" run -n "$ENV_NAME" python -m pip install opencv-python-headless
 else
   printf 'requirements.txt was not found in %s. Check the ProPainter checkout.\n' "$PROPAINTER_REPO_PATH"
 fi
@@ -78,4 +84,10 @@ PROPAINTER_PYTHON=${PYTHON_PATH}
 Then restart the Next.js app and run:
   bash workers/propainter/check-env.sh
   bash workers/propainter/test-worker.sh
+
+If check-env reports a cv2/PyAV duplicate libavdevice conflict, repair the env with:
+  conda run -n ${ENV_NAME} python -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless
+  conda run -n ${ENV_NAME} python -m pip install opencv-python-headless
+
+Do not install PyAV/av by default. ProPainter does not require it for this AIGC worker, and pip av plus pip OpenCV can trigger duplicate libavdevice warnings on macOS.
 MSG
