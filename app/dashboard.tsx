@@ -108,7 +108,18 @@ type CleanupProcessResult = {
   outputSha256: string;
   hashesDifferent: boolean;
   engine?: string;
-  quality?: "fast" | "balanced" | "high";
+  quality?: ProPainterQuality;
+  processingMode?: ProPainterProcessingMode;
+  roi?: ProPainterRoiPlan;
+  propainterParams?: {
+    resizeRatio: number;
+    neighborLength: number;
+    refStride: number;
+    subvideoLength: number;
+    raftIter: number;
+    fp16: boolean;
+    timeoutMs: number;
+  };
   maskPath?: string;
 };
 
@@ -208,6 +219,20 @@ const defaultWatermarkRatios = {
 };
 
 type CleanupRegion = { x: number; y: number; w: number; h: number };
+type ProPainterQuality = "extra_fast" | "fast" | "balanced" | "high";
+type ProPainterProcessingMode = "roi-crop" | "full-frame";
+type ProPainterRoiPlan = {
+  processingMode: "roi-crop";
+  selectedRegion: CleanupRegion;
+  paddedROI: CleanupRegion;
+  maskRegion: CleanupRegion;
+  processingSize: {
+    width: number;
+    height: number;
+  };
+  scale: number;
+  padding: number;
+};
 type UploadState = "idle" | "selected" | "uploading" | "uploaded" | "error";
 type ProPainterAvailability = "unchecked" | "checking" | "available" | "unavailable";
 const browserVideoExtensions = [".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi"];
@@ -1482,7 +1507,9 @@ function VideoCleanupTool() {
   const modeCheckSequenceRef = useRef(0);
   const [uploadedVideo, setUploadedVideo] = useState<UploadedCleanupVideo | null>(null);
   const [mode, setMode] = useState("preview");
-  const [quality, setQuality] = useState<"fast" | "balanced" | "high">("balanced");
+  const [quality, setQuality] = useState<ProPainterQuality>("extra_fast");
+  const [propainterProcessingMode, setPropainterProcessingMode] = useState<ProPainterProcessingMode>("roi-crop");
+  const [allowFullFrame, setAllowFullFrame] = useState(false);
   const [x, setX] = useState(20);
   const [y, setY] = useState(20);
   const [w, setW] = useState(80);
@@ -1547,6 +1574,9 @@ function VideoCleanupTool() {
       });
       setUploadedVideo(data);
       setMode("preview");
+      setQuality("extra_fast");
+      setPropainterProcessingMode("roi-crop");
+      setAllowFullFrame(false);
       setPropainterAvailability("unchecked");
       const defaultRegion = ratiosToRegion(defaultWatermarkRatios, data.width, data.height);
       setX(defaultRegion.x);
@@ -1568,6 +1598,11 @@ function VideoCleanupTool() {
   const changeMode = useCallback(async (nextMode: string) => {
     const checkSequence = ++modeCheckSequenceRef.current;
     setMode(nextMode);
+    if (nextMode === proPainterMode) {
+      setQuality("extra_fast");
+      setPropainterProcessingMode("roi-crop");
+      setAllowFullFrame(false);
+    }
     if (nextMode !== proPainterMode) {
       setLocalError((message) => (message.includes("ProPainter") ? "" : message));
       return;
@@ -1612,6 +1647,9 @@ function VideoCleanupTool() {
     if (nextMode === proPainterMode && propainterAvailability !== "available") {
       return proPainterUiMessage;
     }
+    if (nextMode === proPainterMode && quality !== "extra_fast" && propainterProcessingMode === "full-frame" && !allowFullFrame) {
+      return "Confirm advanced full-frame AI Inpaint, or keep ROI Crop enabled for local Mac processing.";
+    }
     return "";
   }
 
@@ -1646,7 +1684,9 @@ function VideoCleanupTool() {
             mode: nextMode,
             region: { x, y, w, h },
             coverColor,
-            quality: nextMode === proPainterMode ? quality : undefined
+            quality: nextMode === proPainterMode ? quality : undefined,
+            processingMode: nextMode === proPainterMode ? (quality === "extra_fast" ? "roi-crop" : propainterProcessingMode) : undefined,
+            allowFullFrame: nextMode === proPainterMode && propainterProcessingMode === "full-frame" && allowFullFrame
           })
         }
       );
@@ -1714,6 +1754,8 @@ function VideoCleanupTool() {
   const outputTitle = output?.mode === "preview" ? "Preview Output" : "Processed Output";
   const region = { x, y, w, h };
   const ratios = uploadedVideo ? regionToRatios(region, uploadedVideo.width, uploadedVideo.height) : defaultWatermarkRatios;
+  const currentRoi = uploadedVideo ? buildUiRoiPlan(region, uploadedVideo.width, uploadedVideo.height, quality) : null;
+  const effectivePropainterProcessingMode = quality === "extra_fast" ? "roi-crop" : propainterProcessingMode;
 
   return (
     <div className="space-y-4">
@@ -1797,12 +1839,73 @@ function VideoCleanupTool() {
             {mode === proPainterMode ? (
               <div className="space-y-3">
                 <Field label="ProPainter Quality">
-                  <Select value={quality} onChange={(event) => setQuality(event.target.value as typeof quality)}>
-                    <option value="fast">fast</option>
-                    <option value="balanced">balanced</option>
-                    <option value="high">high</option>
+                  <Select
+                    value={quality}
+                    onChange={(event) => {
+                      const nextQuality = event.target.value as ProPainterQuality;
+                      setQuality(nextQuality);
+                      if (nextQuality === "extra_fast") {
+                        setPropainterProcessingMode("roi-crop");
+                        setAllowFullFrame(false);
+                      }
+                    }}
+                  >
+                    <option value="extra_fast">Extra Fast</option>
+                    <option value="fast">Fast</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="high">High</option>
                   </Select>
                 </Field>
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+                  <div className="font-medium">ROI Crop mode</div>
+                  <div className="mt-1">
+                    {quality === "extra_fast"
+                      ? "Extra Fast uses a smaller ROI crop around the selected watermark region. It is recommended for local Mac CPU."
+                      : "ROI Crop: only the selected watermark region will be processed, then overlaid back onto the original video."}
+                  </div>
+                </div>
+                {currentRoi ? (
+                  <div className="rounded-md border bg-white p-3 text-xs text-muted-foreground">
+                    <div className="font-medium text-foreground">AI Inpaint ROI</div>
+                    <div className="mt-1">
+                      selected: x={region.x} y={region.y} w={region.w} h={region.h}
+                    </div>
+                    <div>
+                      padded ROI: x={currentRoi.paddedROI.x} y={currentRoi.paddedROI.y} w={currentRoi.paddedROI.w} h=
+                      {currentRoi.paddedROI.h}
+                    </div>
+                    <div>
+                      processing size: {currentRoi.processingSize.width}x{currentRoi.processingSize.height}
+                    </div>
+                  </div>
+                ) : null}
+                <Label className="flex items-start gap-2 rounded-md border bg-white p-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={quality !== "extra_fast" && propainterProcessingMode === "full-frame"}
+                    disabled={quality === "extra_fast"}
+                    onChange={(event) => {
+                      setPropainterProcessingMode(event.target.checked ? "full-frame" : "roi-crop");
+                      setAllowFullFrame(false);
+                    }}
+                  />
+                  <span>
+                    Full-frame AI Inpaint — very slow on Mac CPU
+                    {quality === "extra_fast" ? " (disabled for Extra Fast)" : ""}
+                  </span>
+                </Label>
+                {propainterProcessingMode === "full-frame" && quality !== "extra_fast" ? (
+                  <Label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={allowFullFrame}
+                      onChange={(event) => setAllowFullFrame(event.target.checked)}
+                    />
+                    <span>I understand full-frame AI Inpaint can be extremely slow on Mac CPU.</span>
+                  </Label>
+                ) : null}
                 <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                   {propainterAvailability === "checking"
                     ? "Checking optional local ProPainter setup..."
@@ -1904,7 +2007,11 @@ PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python`}
               <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
                 <div>Processing {processingMode || "video"}...</div>
                 <div>Elapsed: {formatDuration(processingElapsedSeconds)}</div>
-                {processingMode === proPainterMode ? <div>AI Inpaint can be slow on Mac CPU.</div> : null}
+                {processingMode === proPainterMode ? (
+                  <div>
+                    AI Inpaint can be slow on Mac CPU. quality={quality} processingMode={effectivePropainterProcessingMode}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {localError ? (
@@ -1999,6 +2106,18 @@ PROPAINTER_PYTHON=/opt/miniconda3/envs/propainter/bin/python`}
               <div>hashes different: {String(output.hashesDifferent)}</div>
               {output.engine ? <div>engine: {output.engine}</div> : null}
               {output.quality ? <div>quality: {output.quality}</div> : null}
+              {output.processingMode ? <div>processing mode: {output.processingMode}</div> : null}
+              {output.roi ? (
+                <>
+                  <div>
+                    padded ROI: x={output.roi.paddedROI.x} y={output.roi.paddedROI.y} w={output.roi.paddedROI.w} h=
+                    {output.roi.paddedROI.h}
+                  </div>
+                  <div>
+                    ROI processing size: {output.roi.processingSize.width}x{output.roi.processingSize.height}
+                  </div>
+                </>
+              ) : null}
               {output.maskPath ? <div className="break-all">mask: {output.maskPath}</div> : null}
             </div>
           ) : null}
@@ -2268,6 +2387,60 @@ function regionToRatios(region: CleanupRegion, width: number, height: number) {
     y: height ? region.y / height : 0,
     w: width ? region.w / width : 0,
     h: height ? region.h / height : 0
+  };
+}
+
+function roiPaddingForQuality(quality: ProPainterQuality, region: CleanupRegion) {
+  const longest = Math.max(region.w, region.h);
+  if (quality === "extra_fast") return Math.max(12, Math.round(longest * 0.35));
+  if (quality === "fast") return Math.max(24, Math.round(longest * 0.6));
+  if (quality === "balanced") return Math.max(40, Math.round(longest * 1));
+  return Math.max(64, Math.round(longest * 1.5));
+}
+
+function roiMaxForQuality(quality: ProPainterQuality) {
+  if (quality === "extra_fast") return { width: 192, height: 128 };
+  if (quality === "fast") return { width: 320, height: 240 };
+  if (quality === "balanced") return { width: 512, height: 384 };
+  return { width: 720, height: 540 };
+}
+
+function roiMinForQuality(quality: ProPainterQuality) {
+  if (quality === "fast") return { width: 256, height: 192 };
+  if (quality === "balanced") return { width: 192, height: 144 };
+  return { width: 128, height: 96 };
+}
+
+function evenFloor(value: number) {
+  return Math.max(2, Math.floor(value / 2) * 2);
+}
+
+function buildUiRoiPlan(region: CleanupRegion, width: number, height: number, quality: ProPainterQuality): ProPainterRoiPlan {
+  const padding = roiPaddingForQuality(quality, region);
+  const roiX = Math.max(0, region.x - padding);
+  const roiY = Math.max(0, region.y - padding);
+  const roiW = evenFloor(Math.min(width - roiX, region.w + padding * 2));
+  const roiH = evenFloor(Math.min(height - roiY, region.h + padding * 2));
+  const maxRoi = roiMaxForQuality(quality);
+  const minRoi = roiMinForQuality(quality);
+  const maxScale = Math.min(maxRoi.width / roiW, maxRoi.height / roiH);
+  const preferredScale = Math.max(1, minRoi.width / roiW, minRoi.height / roiH);
+  const scale = Math.min(maxScale, preferredScale);
+  const processingWidth = evenFloor(roiW * scale);
+  const processingHeight = evenFloor(roiH * scale);
+  const maskX = Math.max(0, Math.round((region.x - roiX) * scale));
+  const maskY = Math.max(0, Math.round((region.y - roiY) * scale));
+  const maskW = Math.max(2, Math.min(evenFloor(region.w * scale), processingWidth - maskX));
+  const maskH = Math.max(2, Math.min(evenFloor(region.h * scale), processingHeight - maskY));
+
+  return {
+    processingMode: "roi-crop",
+    selectedRegion: region,
+    paddedROI: { x: roiX, y: roiY, w: roiW, h: roiH },
+    maskRegion: { x: maskX, y: maskY, w: maskW, h: maskH },
+    processingSize: { width: processingWidth, height: processingHeight },
+    scale,
+    padding
   };
 }
 

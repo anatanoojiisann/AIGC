@@ -13,6 +13,7 @@ import {
   VIDEO_CLEANUP_MODES,
   type VideoCleanupMode,
   type ProPainterQuality,
+  type ProPainterProcessingMode,
   type VideoCleanupRegion
 } from "@/lib/video/ffmpeg";
 import {
@@ -30,6 +31,8 @@ type CleanupBody = {
   confirmedRights?: boolean;
   coverColor?: string;
   quality?: string;
+  processingMode?: string;
+  allowFullFrame?: boolean;
 };
 
 export function cleanupErrorResponse(error: unknown) {
@@ -93,7 +96,9 @@ export async function runUploadedCleanup(body: CleanupBody, defaultMode?: VideoC
     mode,
     region,
     coverColor: body.coverColor,
-    quality: body.quality as ProPainterQuality | undefined
+    quality: body.quality as ProPainterQuality | undefined,
+    processingMode: body.processingMode as ProPainterProcessingMode | undefined,
+    allowFullFrame: body.allowFullFrame === true
   });
 
   return {
@@ -114,6 +119,9 @@ export async function runUploadedCleanup(body: CleanupBody, defaultMode?: VideoC
     hashesDifferent: data.output.hashesDifferent,
     engine: data.output.engine,
     quality: data.output.quality,
+    processingMode: data.output.processingMode,
+    roi: data.output.roi,
+    propainterParams: data.output.propainterParams,
     maskPath: data.output.maskPath
   };
 }
@@ -172,7 +180,9 @@ export async function runAssetCleanup(body: CleanupBody, defaultMode?: VideoClea
       w: region.w,
       h: region.h,
       coverColor: body.coverColor,
-      quality: body.quality as ProPainterQuality | undefined
+      quality: body.quality as ProPainterQuality | undefined,
+      processingMode: body.processingMode as ProPainterProcessingMode | undefined,
+      allowFullFrame: body.allowFullFrame === true
     });
     const info = await storedFileInfo(outputPath);
     const outputAsset = await prisma.asset.create({

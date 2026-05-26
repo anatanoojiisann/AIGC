@@ -20,6 +20,7 @@ type Args = {
   w?: string;
   h?: string;
   dryRun?: boolean;
+  processingMode?: string;
 };
 
 function loadEnvFile(fileName: ".env.local" | ".env") {
@@ -43,12 +44,17 @@ function loadEnv() {
 
 function readArgs(argv: string[]) {
   const args: Args = {};
-  const allowed = new Set(["input", "output", "quality", "timeoutSec", "x", "y", "w", "h", "dryRun"]);
+  const aliases: Record<string, keyof Args> = {
+    "dry-run": "dryRun",
+    "processing-mode": "processingMode"
+  };
+  const allowed = new Set(["input", "output", "quality", "timeoutSec", "x", "y", "w", "h", "dryRun", "processingMode", ...Object.keys(aliases)]);
   for (let index = 0; index < argv.length; index += 1) {
     const raw = argv[index];
     if (!raw.startsWith("--")) throw new VideoCleanupError("VALIDATION_ERROR", `Unexpected argument "${raw}".`);
-    const key = raw.slice(2);
-    if (!allowed.has(key)) throw new VideoCleanupError("VALIDATION_ERROR", `Unsupported argument "--${key}".`);
+    const rawKey = raw.slice(2);
+    const key = aliases[rawKey] || rawKey;
+    if (!allowed.has(rawKey)) throw new VideoCleanupError("VALIDATION_ERROR", `Unsupported argument "--${rawKey}".`);
     if (key === "dryRun") {
       args.dryRun = true;
       continue;
@@ -78,11 +84,11 @@ function numberArg(args: Args, key: "x" | "y" | "w" | "h", fallback: number) {
 }
 
 function normalizeQuality(value?: string): ProPainterQuality {
-  const quality = String(value || "fast").toLowerCase();
-  if (quality !== "fast" && quality !== "balanced" && quality !== "high") {
-    throw new VideoCleanupError("VALIDATION_ERROR", "quality must be fast, balanced, or high.");
+  const quality = String(value || "extra_fast").trim().toLowerCase().replace(/\s+/g, "_").replace(/-/g, "_");
+  if (quality !== "extra_fast" && quality !== "fast" && quality !== "balanced" && quality !== "high") {
+    throw new VideoCleanupError("VALIDATION_ERROR", "quality must be extra_fast, fast, balanced, or high.");
   }
-  return quality;
+  return quality as ProPainterQuality;
 }
 
 function diagnosisFor(input: { width: number; height: number; duration?: number; estimatedFrameCount?: number }, quality: ProPainterQuality) {
@@ -130,6 +136,7 @@ async function main() {
       output,
       mode: "ai-inpaint-propainter",
       quality,
+      processingMode: args.processingMode === "full-frame" ? "full-frame" : "roi-crop",
       ...region,
       dryRun: Boolean(args.dryRun)
     });
@@ -150,6 +157,8 @@ async function main() {
         estimatedFrames: metadata.estimatedFrameCount
       },
       quality,
+      processingMode: result.processingMode,
+      roi: result.roi,
       propainterParams: {
         ...params,
         processedWidth: Math.round(metadata.width * params.resizeRatio),
@@ -192,6 +201,7 @@ async function main() {
         estimatedFrames: metadata.estimatedFrameCount
       },
       quality,
+      processingMode: args.processingMode || "roi-crop",
       propainterParams: {
         ...params,
         processedWidth: Math.round(metadata.width * params.resizeRatio),

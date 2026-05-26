@@ -86,7 +86,7 @@ ffprobe -v error -show_entries format=duration,size -of json "$FIXTURE" >/dev/nu
 printf 'input exists: %s\n' "$FIXTURE"
 
 step "Running npm run video:watermark"
-printf 'command: npm run video:watermark -- --input %s --output %s --mode ai-inpaint-propainter --x 20 --y 20 --w 40 --h 24 --quality fast\n' "$FIXTURE" "$OUTPUT"
+printf 'command: npm run video:watermark -- --input %s --output %s --mode ai-inpaint-propainter --x 20 --y 20 --w 40 --h 24 --quality extra_fast --processing-mode roi-crop\n' "$FIXTURE" "$OUTPUT"
 TIMEOUT_MARKER="$(mktemp)"
 RUN_LOG="$(mktemp)"
 STARTED_AT="$(date +%s)"
@@ -111,7 +111,8 @@ kill_tree() {
     --y 20 \
     --w 40 \
     --h 24 \
-    --quality fast
+    --quality extra_fast \
+    --processing-mode roi-crop
 ) >"$RUN_LOG" 2>&1 &
 CHILD_PID=$!
 printf 'command started: pid=%s timeout=%ss\n' "$CHILD_PID" "$TIMEOUT_SECONDS"

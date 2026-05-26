@@ -4,10 +4,12 @@ import path from "path";
 import { spawn } from "child_process";
 
 export const VIDEO_CLEANUP_MODES = ["preview", "delogo", "blur", "cover", "crop", "ai-inpaint-propainter"] as const;
-export const PROPAINTER_QUALITIES = ["fast", "balanced", "high"] as const;
+export const PROPAINTER_QUALITIES = ["extra_fast", "fast", "balanced", "high"] as const;
+export const PROPAINTER_PROCESSING_MODES = ["roi-crop", "full-frame"] as const;
 
 export type VideoCleanupMode = (typeof VIDEO_CLEANUP_MODES)[number];
 export type ProPainterQuality = (typeof PROPAINTER_QUALITIES)[number];
+export type ProPainterProcessingMode = (typeof PROPAINTER_PROCESSING_MODES)[number];
 
 export type VideoCleanupRegion = {
   x: number;
@@ -31,6 +33,8 @@ export type VideoCleanupOptions = VideoCleanupRegion & {
   coverColor?: string;
   dryRun?: boolean;
   quality?: ProPainterQuality;
+  processingMode?: ProPainterProcessingMode;
+  allowFullFrame?: boolean;
 };
 
 export type VideoCleanupResult = {
@@ -45,7 +49,10 @@ export type VideoCleanupResult = {
   dryRun: boolean;
   engine: "FFmpeg" | "ProPainter";
   quality?: ProPainterQuality;
+  processingMode?: ProPainterProcessingMode;
   maskPath?: string;
+  roi?: ProPainterRoiPlan;
+  propainterParams?: ProPainterParams;
 };
 
 export type ProPainterAvailability = {
@@ -85,6 +92,20 @@ export type ProPainterParams = {
   subvideoLength: number;
   raftIter: number;
   fp16: boolean;
+  timeoutMs: number;
+};
+
+export type ProPainterRoiPlan = {
+  processingMode: "roi-crop";
+  selectedRegion: VideoCleanupRegion;
+  paddedROI: VideoCleanupRegion;
+  maskRegion: VideoCleanupRegion;
+  processingSize: {
+    width: number;
+    height: number;
+  };
+  scale: number;
+  padding: number;
 };
 
 export class VideoCleanupError extends Error {
@@ -131,6 +152,7 @@ type RunCommandOptions = {
   heartbeatMs?: number;
   failureCode?: string;
   timeoutCode?: string;
+  heartbeatDetails?: Record<string, unknown>;
 };
 
 function logProgress(message: string) {
@@ -240,7 +262,7 @@ function runCommand(command: string, args: string[], options: RunCommandOptions 
       const snapshot = await outputSnapshot(options.monitorOutputPath);
       const cpuMemory = await processSnapshot(child.pid || 0);
       logProgress(
-        `==> Heartbeat: phase=${options.phase || "running"} jobId=${options.jobId || "n/a"} elapsed=${elapsed}s childPid=${child.pid ?? "unknown"} childAlive=${!settled} outputExists=${snapshot.exists} outputSize=${snapshot.size}${cpuMemory ? ` ps="${cpuMemory}"` : " ps=unavailable"}`
+        `==> Heartbeat: phase=${options.phase || "running"} jobId=${options.jobId || "n/a"} elapsed=${elapsed}s childPid=${child.pid ?? "unknown"} childAlive=${!settled} outputExists=${snapshot.exists} outputSize=${snapshot.size}${cpuMemory ? ` ps="${cpuMemory}"` : " ps=unavailable"}${options.heartbeatDetails ? ` details=${JSON.stringify(options.heartbeatDetails)}` : ""}`
       );
       if (recentStdout.length > 0) {
         logProgress("==> Last stdout lines:");
@@ -372,11 +394,20 @@ function normalizeRegion(options: Pick<VideoCleanupOptions, "x" | "y" | "w" | "h
 }
 
 function normalizeQuality(value: unknown): ProPainterQuality {
-  const quality = String(value || "balanced").toLowerCase();
+  const quality = String(value || "extra_fast").trim().toLowerCase().replace(/\s+/g, "_").replace(/-/g, "_");
   if (!PROPAINTER_QUALITIES.includes(quality as ProPainterQuality)) {
-    throw new VideoCleanupError("VALIDATION_ERROR", "quality must be fast, balanced, or high.");
+    throw new VideoCleanupError("VALIDATION_ERROR", "quality must be extra_fast, fast, balanced, or high.");
   }
   return quality as ProPainterQuality;
+}
+
+function normalizeProcessingMode(value: unknown, quality: ProPainterQuality): ProPainterProcessingMode {
+  if (quality === "extra_fast") return "roi-crop";
+  const mode = String(value || "roi-crop").trim().toLowerCase();
+  if (!PROPAINTER_PROCESSING_MODES.includes(mode as ProPainterProcessingMode)) {
+    throw new VideoCleanupError("VALIDATION_ERROR", "processingMode must be roi-crop or full-frame.");
+  }
+  return mode as ProPainterProcessingMode;
 }
 
 async function assertInputVideo(inputPath: string) {
@@ -792,6 +823,42 @@ async function createPropainterMask(maskPath: string, region: VideoCleanupRegion
   }
 }
 
+async function cropPropainterRoi(input: string, roiInput: string, roi: ProPainterRoiPlan) {
+  await mkdir(path.dirname(roiInput), { recursive: true });
+  const crop = roi.paddedROI;
+  const args = [
+    "-y",
+    "-i",
+    input,
+    "-vf",
+    `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},scale=${roi.processingSize.width}:${roi.processingSize.height}`,
+    "-an",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-pix_fmt",
+    "yuv420p",
+    roiInput
+  ];
+  logProgress(`==> Exact ROI crop command: ffmpeg ${args.map(shellQuote).join(" ")}`);
+  await runCommand("ffmpeg", args, {
+    stream: true,
+    label: "FFmpeg ROI crop",
+    heartbeatMs: Number(process.env.PROPAINTER_HEARTBEAT_MS || 10_000),
+    timeoutMs: Number(process.env.PROPAINTER_PREP_TIMEOUT_MS || 120_000),
+    failureCode: "PROCESSING_FAILED",
+    timeoutCode: "PROPAINTER_TIMEOUT",
+    heartbeatDetails: {
+      processingMode: roi.processingMode,
+      selectedRegion: roi.selectedRegion,
+      paddedROI: roi.paddedROI,
+      roiOriginalSize: { width: roi.paddedROI.w, height: roi.paddedROI.h },
+      roiProcessingSize: roi.processingSize
+    }
+  });
+}
+
 async function extractPropainterFrames(input: string, framesRoot: string) {
   await rm(framesRoot, { recursive: true, force: true }).catch(() => undefined);
   await mkdir(framesRoot, { recursive: true });
@@ -816,12 +883,137 @@ async function extractPropainterFrames(input: string, framesRoot: string) {
   });
 }
 
+async function overlayPropainterRoi({
+  originalInput,
+  roiOutput,
+  output,
+  roi,
+  video
+}: {
+  originalInput: string;
+  roiOutput: string;
+  output: string;
+  roi: ProPainterRoiPlan;
+  video: VideoMetadata;
+}) {
+  const args = [
+    "-y",
+    "-i",
+    originalInput,
+    "-i",
+    roiOutput,
+    "-filter_complex",
+    `[1:v]scale=${roi.paddedROI.w}:${roi.paddedROI.h},format=yuv420p[roi];[0:v][roi]overlay=${roi.paddedROI.x}:${roi.paddedROI.y}:shortest=1[v]`,
+    "-map",
+    "[v]",
+    "-map",
+    "0:a?",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "copy",
+    output
+  ];
+  logProgress(`==> Exact ROI overlay command: ffmpeg ${args.map(shellQuote).join(" ")}`);
+  await runCommand("ffmpeg", args, {
+    stream: true,
+    label: "FFmpeg ROI overlay",
+    heartbeatMs: Number(process.env.PROPAINTER_HEARTBEAT_MS || 10_000),
+    timeoutMs: Number(process.env.PROPAINTER_PREP_TIMEOUT_MS || 120_000),
+    failureCode: "PROCESSING_FAILED",
+    timeoutCode: "PROPAINTER_TIMEOUT",
+    monitorOutputPath: output,
+    heartbeatDetails: {
+      processingMode: roi.processingMode,
+      selectedRegion: roi.selectedRegion,
+      paddedROI: roi.paddedROI,
+      roiWidth: roi.paddedROI.w,
+      roiHeight: roi.paddedROI.h,
+      originalWidth: video.width,
+      originalHeight: video.height,
+      duration: video.duration
+    }
+  });
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function qualityPadding(quality: ProPainterQuality, region: VideoCleanupRegion) {
+  const longest = Math.max(region.w, region.h);
+  if (quality === "extra_fast") return Math.max(12, Math.round(longest * 0.35));
+  if (quality === "fast") return Math.max(24, Math.round(longest * 0.6));
+  if (quality === "balanced") return Math.max(40, Math.round(longest * 1));
+  return Math.max(64, Math.round(longest * 1.5));
+}
+
+function qualityMaxRoi(quality: ProPainterQuality) {
+  if (quality === "extra_fast") return { width: 192, height: 128 };
+  if (quality === "fast") return { width: 320, height: 240 };
+  if (quality === "balanced") return { width: 512, height: 384 };
+  return { width: 720, height: 540 };
+}
+
+function qualityMinRoi(quality: ProPainterQuality) {
+  if (quality === "extra_fast") return { width: 128, height: 96 };
+  if (quality === "fast") return { width: 256, height: 192 };
+  if (quality === "balanced") return { width: 192, height: 144 };
+  return { width: 128, height: 96 };
+}
+
+function evenFloor(value: number) {
+  return Math.max(2, Math.floor(value / 2) * 2);
+}
+
+export function buildPropainterRoiPlan(region: VideoCleanupRegion, video: VideoMetadata, quality: ProPainterQuality): ProPainterRoiPlan {
+  const padding = qualityPadding(quality, region);
+  const roiX = Math.max(0, region.x - padding);
+  const roiY = Math.max(0, region.y - padding);
+  let roiW = Math.min(video.width - roiX, region.w + padding * 2);
+  let roiH = Math.min(video.height - roiY, region.h + padding * 2);
+  roiW = evenFloor(roiW);
+  roiH = evenFloor(roiH);
+
+  if (region.x + region.w > roiX + roiW) roiW = evenFloor(region.x + region.w - roiX);
+  if (region.y + region.h > roiY + roiH) roiH = evenFloor(region.y + region.h - roiY);
+  if (roiX + roiW > video.width) roiW = evenFloor(video.width - roiX);
+  if (roiY + roiH > video.height) roiH = evenFloor(video.height - roiY);
+
+  const maxRoi = qualityMaxRoi(quality);
+  const minRoi = qualityMinRoi(quality);
+  const maxScale = Math.min(maxRoi.width / roiW, maxRoi.height / roiH);
+  const preferredScale = Math.max(1, minRoi.width / roiW, minRoi.height / roiH);
+  const scale = Math.min(maxScale, preferredScale);
+  const processingWidth = evenFloor(roiW * scale);
+  const processingHeight = evenFloor(roiH * scale);
+  const maskX = clamp(Math.round((region.x - roiX) * scale), 0, Math.max(0, processingWidth - 2));
+  const maskY = clamp(Math.round((region.y - roiY) * scale), 0, Math.max(0, processingHeight - 2));
+  const maskW = clamp(Math.round(region.w * scale), 2, processingWidth - maskX);
+  const maskH = clamp(Math.round(region.h * scale), 2, processingHeight - maskY);
+
+  return {
+    processingMode: "roi-crop",
+    selectedRegion: region,
+    paddedROI: { x: roiX, y: roiY, w: roiW, h: roiH },
+    maskRegion: { x: maskX, y: maskY, w: evenFloor(maskW), h: evenFloor(maskH) },
+    processingSize: { width: processingWidth, height: processingHeight },
+    scale,
+    padding
+  };
+}
+
 async function runPropainterInpaint({
   input,
   output,
   region,
   video,
   quality,
+  processingMode,
   dryRun
 }: {
   input: string;
@@ -829,20 +1021,28 @@ async function runPropainterInpaint({
   region: VideoCleanupRegion;
   video: VideoMetadata;
   quality: ProPainterQuality;
+  processingMode: ProPainterProcessingMode;
   dryRun: boolean;
 }) {
   const jobId = path.basename(output, path.extname(output));
-  logPhase("validating-env", { jobId, quality });
+  const jobStartedAtMs = Date.now();
+  const effectiveProcessingMode = quality === "extra_fast" ? "roi-crop" : processingMode;
+  logPhase("validating-env", { jobId, quality, processingMode: effectiveProcessingMode });
   const { resolvedRepoPath, resolvedPythonPath, script, diagnostics } = await getPropainterEnvironment();
 
   const maskPath = path.join(path.dirname(output), `${path.basename(output, path.extname(output))}-mask.png`);
-  const filter = `propainter-mask=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:quality=${quality}`;
+  const roi = effectiveProcessingMode === "roi-crop" ? buildPropainterRoiPlan(region, video, quality) : undefined;
+  const filter = roi
+    ? `propainter-roi=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:quality=${quality}:processingMode=roi-crop:roi=${roi.paddedROI.x},${roi.paddedROI.y},${roi.paddedROI.w},${roi.paddedROI.h}:mask=${roi.maskRegion.x},${roi.maskRegion.y},${roi.maskRegion.w},${roi.maskRegion.h}`
+    : `propainter-mask=x=${region.x}:y=${region.y}:w=${region.w}:h=${region.h}:quality=${quality}:processingMode=full-frame`;
   const runOutputDir = path.join(path.dirname(output), `${path.basename(output, path.extname(output))}-propainter-work`);
   const framesRoot = path.join(path.dirname(output), `${path.basename(output, path.extname(output))}-propainter-frames`);
+  const roiInput = path.join(path.dirname(output), `${path.basename(output, path.extname(output))}-roi-input.mp4`);
   const propainterInput = framesRoot;
   const videoName = path.basename(propainterInput);
   const generatedOutput = path.join(runOutputDir, videoName, "inpaint_out.mp4");
   const params = getPropainterQualityParams(quality);
+  const inferenceTimeoutMs = quality === "extra_fast" && video.duration && video.duration <= 3 ? 120_000 : params.timeoutMs;
   const args = [
     script,
     "-i",
@@ -862,6 +1062,8 @@ async function runPropainterInpaint({
   if (!dryRun) {
     await rm(output, { force: true }).catch(() => undefined);
     await rm(runOutputDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(framesRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(roiInput, { force: true }).catch(() => undefined);
     logPhase("probing-input", {
       jobId,
       input,
@@ -869,21 +1071,38 @@ async function runPropainterInpaint({
       height: video.height,
       duration: video.duration,
       fps: video.fps,
-      estimatedFrameCount: video.estimatedFrameCount
+      estimatedFrameCount: video.estimatedFrameCount,
+      quality,
+      processingMode: effectiveProcessingMode,
+      selectedRegion: region,
+      paddedROI: roi?.paddedROI,
+      roiWidth: roi?.paddedROI.w,
+      roiHeight: roi?.paddedROI.h,
+      roiProcessingSize: roi?.processingSize
     });
     logProgress("==> ProPainter diagnostics:");
     logProgress(JSON.stringify(diagnostics, null, 2));
     logProgress(`==> Input video metadata: ${JSON.stringify(video)}`);
     logProgress(`==> Computed ProPainter params: ${JSON.stringify(params)}`);
+    if (roi) logProgress(`==> ROI crop plan: ${JSON.stringify(roi)}`);
     logProgress(`==> Mask path: ${maskPath}`);
     logProgress(`==> Output path: ${output}`);
     logProgress(`==> Exact ProPainter command: ${resolvedPythonPath} ${args.map(shellQuote).join(" ")}`);
     logProgress("==> Python/ProPainter stdout:");
     logProgress("==> Python/ProPainter stderr:");
-    logPhase("creating-mask", { jobId, maskPath });
-    await createPropainterMask(maskPath, region, video);
-    logPhase("preparing-input", { jobId, runOutputDir, framesRoot, generatedOutput });
-    await extractPropainterFrames(input, framesRoot);
+    if (roi) {
+      logPhase("preparing-input", { jobId, processingMode: "roi-crop", roiInput, paddedROI: roi.paddedROI, roiProcessingSize: roi.processingSize });
+      await cropPropainterRoi(input, roiInput, roi);
+      logPhase("creating-mask", { jobId, maskPath, maskRegion: roi.maskRegion, maskSize: roi.processingSize });
+      await createPropainterMask(maskPath, roi.maskRegion, { width: roi.processingSize.width, height: roi.processingSize.height });
+      logPhase("preparing-input", { jobId, runOutputDir, framesRoot, generatedOutput });
+      await extractPropainterFrames(roiInput, framesRoot);
+    } else {
+      logPhase("creating-mask", { jobId, maskPath, processingMode: "full-frame" });
+      await createPropainterMask(maskPath, region, video);
+      logPhase("preparing-input", { jobId, runOutputDir, framesRoot, generatedOutput });
+      await extractPropainterFrames(input, framesRoot);
+    }
     logPhase("running-propainter", { jobId, startedAt: new Date().toISOString() });
     try {
       await runCommand(resolvedPythonPath, args, {
@@ -899,9 +1118,23 @@ async function runPropainterInpaint({
         phase: "running-propainter",
         monitorOutputPath: generatedOutput,
         heartbeatMs: Number(process.env.PROPAINTER_HEARTBEAT_MS || 10_000),
-        timeoutMs: Number(process.env.PROPAINTER_TIMEOUT_MS || 600_000),
+        timeoutMs: Number(process.env.PROPAINTER_TIMEOUT_MS || inferenceTimeoutMs),
         failureCode: "PROPAINTER_INFERENCE_FAILED",
-        timeoutCode: "PROPAINTER_TIMEOUT"
+        timeoutCode: "PROPAINTER_TIMEOUT",
+        heartbeatDetails: {
+          processingMode: effectiveProcessingMode,
+          selectedRegion: region,
+          paddedROI: roi?.paddedROI,
+          roiWidth: roi?.paddedROI.w,
+          roiHeight: roi?.paddedROI.h,
+          roiOriginalSize: roi ? { width: roi.paddedROI.w, height: roi.paddedROI.h } : undefined,
+          roiProcessingSize: roi?.processingSize,
+          originalWidth: video.width,
+          originalHeight: video.height,
+          duration: video.duration,
+          quality,
+          timeoutMs: inferenceTimeoutMs
+        }
       });
     } catch (error) {
       logPhase(error instanceof VideoCleanupError && error.code === "PROPAINTER_TIMEOUT" ? "timed-out" : "failed", {
@@ -917,7 +1150,11 @@ async function runPropainterInpaint({
       if (!info.isFile() || info.size <= 0) {
         throw new Error("Generated ProPainter output is empty.");
       }
-      await copyFile(generatedOutput, output);
+      if (roi) {
+        await overlayPropainterRoi({ originalInput: input, roiOutput: generatedOutput, output, roi, video });
+      } else {
+        await copyFile(generatedOutput, output);
+      }
       const finalInfo = await stat(output);
       if (!finalInfo.isFile() || finalInfo.size <= 0) {
         throw new Error("Copied ProPainter output is empty.");
@@ -926,7 +1163,19 @@ async function runPropainterInpaint({
       if (!outputMetadata.duration || outputMetadata.duration <= 0) {
         throw new Error("Output duration was not greater than zero.");
       }
-      logPhase("completed", { jobId, output, size: finalInfo.size, duration: outputMetadata.duration });
+      if (finalInfo.mtimeMs < jobStartedAtMs - 5_000) {
+        throw new Error("Output file timestamp predates this ProPainter job.");
+      }
+      logPhase("completed", {
+        jobId,
+        output,
+        size: finalInfo.size,
+        duration: outputMetadata.duration,
+        processingMode: effectiveProcessingMode,
+        selectedRegion: region,
+        paddedROI: roi?.paddedROI,
+        roiProcessingSize: roi?.processingSize
+      });
     } catch (error) {
       logPhase("failed", { jobId, output, generatedOutput });
       throw new VideoCleanupError(
@@ -937,7 +1186,7 @@ async function runPropainterInpaint({
     }
   }
 
-  return { args, filter, maskPath };
+  return { args, filter, maskPath, roi, processingMode: effectiveProcessingMode, params };
 }
 
 function shellQuote(value: string) {
@@ -946,13 +1195,16 @@ function shellQuote(value: string) {
 }
 
 export function getPropainterQualityParams(quality: ProPainterQuality): ProPainterParams {
+  if (quality === "extra_fast") {
+    return { resizeRatio: 1, neighborLength: 3, refStride: 15, subvideoLength: 20, raftIter: 3, fp16: false, timeoutMs: 300_000 };
+  }
   if (quality === "fast") {
-    return { resizeRatio: 0.5, neighborLength: 5, refStride: 10, subvideoLength: 40, raftIter: 5, fp16: false };
+    return { resizeRatio: 0.5, neighborLength: 5, refStride: 10, subvideoLength: 40, raftIter: 5, fp16: false, timeoutMs: 300_000 };
   }
   if (quality === "balanced") {
-    return { resizeRatio: 0.75, neighborLength: 10, refStride: 10, subvideoLength: 60, raftIter: 10, fp16: false };
+    return { resizeRatio: 0.75, neighborLength: 10, refStride: 10, subvideoLength: 60, raftIter: 10, fp16: false, timeoutMs: 600_000 };
   }
-  return { resizeRatio: 1, neighborLength: 10, refStride: 10, subvideoLength: 80, raftIter: 20, fp16: false };
+  return { resizeRatio: 1, neighborLength: 10, refStride: 10, subvideoLength: 80, raftIter: 20, fp16: false, timeoutMs: 1_200_000 };
 }
 
 function propainterQualityArgs(quality: ProPainterQuality) {
@@ -994,12 +1246,26 @@ export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<
 
   if (mode === "ai-inpaint-propainter") {
     const quality = normalizeQuality(options.quality);
-    const { args, filter, maskPath } = await runPropainterInpaint({
+    const processingMode = normalizeProcessingMode(options.processingMode, quality);
+    if (processingMode === "full-frame" && !options.allowFullFrame) {
+      throw new VideoCleanupError(
+        "VALIDATION_ERROR",
+        "Full-frame AI Inpaint is advanced and can be very slow on Mac CPU. Keep ROI Crop enabled or explicitly confirm full-frame processing."
+      );
+    }
+    if (processingMode === "full-frame" && quality === "high" && video.duration && video.duration > 5 && process.env.PROPAINTER_ALLOW_SLOW_FULL_FRAME !== "true") {
+      throw new VideoCleanupError(
+        "VALIDATION_ERROR",
+        "High quality full-frame AI Inpaint is blocked for videos longer than 5 seconds unless PROPAINTER_ALLOW_SLOW_FULL_FRAME=true is set."
+      );
+    }
+    const { args, filter, maskPath, roi, processingMode: effectiveProcessingMode, params } = await runPropainterInpaint({
       input,
       output,
       region,
       video,
       quality,
+      processingMode,
       dryRun: Boolean(options.dryRun)
     });
 
@@ -1015,7 +1281,10 @@ export async function runVideoCleanupJob(options: VideoCleanupOptions): Promise<
       dryRun: Boolean(options.dryRun),
       engine: "ProPainter",
       quality,
-      maskPath
+      processingMode: effectiveProcessingMode,
+      maskPath,
+      roi,
+      propainterParams: params
     };
   }
 

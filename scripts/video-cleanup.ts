@@ -13,6 +13,8 @@ type CliArgs = {
   coverColor?: string;
   dryRun?: boolean;
   quality?: string;
+  processingMode?: string;
+  allowFullFrame?: boolean;
 };
 
 function loadEnvFile(fileName: ".env.local" | ".env") {
@@ -36,7 +38,27 @@ function loadLocalEnvFiles() {
 
 function readArgs(argv: string[]) {
   const args: CliArgs = {};
-  const allowed = new Set(["input", "output", "mode", "x", "y", "w", "h", "coverColor", "dryRun", "quality"]);
+  const aliases: Record<string, keyof CliArgs> = {
+    "cover-color": "coverColor",
+    "dry-run": "dryRun",
+    "processing-mode": "processingMode",
+    "allow-full-frame": "allowFullFrame"
+  };
+  const allowed = new Set([
+    "input",
+    "output",
+    "mode",
+    "x",
+    "y",
+    "w",
+    "h",
+    "coverColor",
+    "dryRun",
+    "quality",
+    "processingMode",
+    "allowFullFrame",
+    ...Object.keys(aliases)
+  ]);
 
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
@@ -44,13 +66,15 @@ function readArgs(argv: string[]) {
       throw new VideoCleanupError("VALIDATION_ERROR", `Unexpected argument "${key}".`);
     }
 
-    const name = key.slice(2);
-    if (!allowed.has(name)) {
-      throw new VideoCleanupError("VALIDATION_ERROR", `Unsupported argument "--${name}".`);
+    const rawName = key.slice(2);
+    const name = aliases[rawName] || rawName;
+    if (!allowed.has(rawName)) {
+      throw new VideoCleanupError("VALIDATION_ERROR", `Unsupported argument "--${rawName}".`);
     }
 
-    if (name === "dryRun") {
-      args.dryRun = true;
+    if (name === "dryRun" || name === "allowFullFrame") {
+      if (name === "dryRun") args.dryRun = true;
+      if (name === "allowFullFrame") args.allowFullFrame = true;
       continue;
     }
 
@@ -95,7 +119,9 @@ async function main() {
     h: requiredNumber(args, "h"),
     coverColor: args.coverColor,
     dryRun: Boolean(args.dryRun),
-    quality: args.quality as never
+    quality: args.quality as never,
+    processingMode: args.processingMode as never,
+    allowFullFrame: Boolean(args.allowFullFrame)
   });
 
   process.stdout.write(
@@ -111,6 +137,9 @@ async function main() {
           dryRun: result.dryRun,
           engine: result.engine,
           quality: result.quality,
+          processingMode: result.processingMode,
+          roi: result.roi,
+          propainterParams: result.propainterParams,
           maskPath: result.maskPath
         }
       },

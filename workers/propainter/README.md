@@ -186,14 +186,28 @@ This uses:
 
 ```bash
 npm run video:watermark -- \
-  --input ./storage/watermark-verification/input.mp4 \
-  --output ./storage/watermark-verification/output-propainter.mp4 \
+  --input ./storage/watermark-verification/input-smoke.mp4 \
+  --output ./storage/watermark-verification/output-propainter-smoke.mp4 \
   --mode ai-inpaint-propainter \
-  --x 20 --y 20 --w 80 --h 30 \
-  --quality fast
+  --x 20 --y 20 --w 40 --h 24 \
+  --quality extra_fast \
+  --processing-mode roi-crop
 ```
 
-If ProPainter is missing, the script returns a clean `PROPAINTER_NOT_INSTALLED` result and prints the missing setup items. If ProPainter is installed, it verifies that `output-propainter.mp4` exists, is readable by FFprobe, and has a different SHA256 hash from the input.
+If ProPainter is missing, the script returns a clean `PROPAINTER_NOT_INSTALLED` result and prints the missing setup items. If ProPainter is installed, it verifies that `output-propainter-smoke.mp4` exists, is readable by FFprobe, and has a different SHA256 hash from the input.
+
+## AI Inpaint Quality Modes
+
+ProPainter runs in ROI Crop mode by default: AIGC crops the selected watermark region plus padding, runs ProPainter only on that smaller crop, scales the processed crop back to the original ROI size, and overlays it onto the original video.
+
+Available qualities:
+
+- `extra_fast`: default for AI Inpaint - ProPainter. Uses the smallest safe ROI processing size and is recommended for local Mac CPU.
+- `fast`: ROI Crop with more padding and a larger safe processing size.
+- `balanced`: ROI Crop with a wider context area.
+- `high`: ROI Crop with the largest default local context area. Full-frame processing remains advanced-only because it can be extremely slow on Mac CPU.
+
+Accepted CLI aliases for Extra Fast are `extra_fast`, `extra-fast`, and `Extra Fast`. Internally they normalize to `extra_fast`.
 
 ## Browser Test
 
@@ -213,7 +227,7 @@ http://localhost:3003/video-cleanup
 4. Confirm the default mode is Preview.
 5. Confirm Preview and Delogo still work.
 6. Select AI Inpaint - ProPainter.
-7. Choose Fast quality.
+7. Confirm the quality defaults to Extra Fast and the UI shows ROI Crop mode.
 8. Process the video.
 9. Confirm processed output appears and Download Result works.
 
@@ -314,11 +328,11 @@ ffprobe -version
 
 ### Mac Without NVIDIA GPU Is Slow
 
-Most ProPainter examples are designed around CUDA-capable GPUs. On a Mac without NVIDIA GPU support, inference can be slow or may require CPU/MPS-compatible dependency adjustments. Test with a very short clip and `--quality fast`.
+Most ProPainter examples are designed around CUDA-capable GPUs. On a Mac without NVIDIA GPU support, inference can be slow or may require CPU/MPS-compatible dependency adjustments. Test with a very short clip and `--quality extra_fast --processing-mode roi-crop`.
 
 ### OOM Or Memory Issues
 
-Use shorter clips, lower resolution, `--quality fast`, or a machine with more available GPU/CPU memory.
+Use shorter clips, ROI Crop mode, `--quality extra_fast`, or a machine with more available GPU/CPU memory.
 
 ### ProPainter Unavailable But Local Modes Still Work
 
