@@ -8,6 +8,9 @@ import {
   VideoCleanupError,
   type VideoCleanupMode,
   type ProPainterQuality,
+  type ProPainterProcessingMode,
+  type ProPainterRoiPlan,
+  type ProPainterParams,
   type VideoCleanupRegion,
   type VideoMetadata
 } from "@/lib/video/ffmpeg";
@@ -52,6 +55,9 @@ export type CleanupOutputRecord = {
   ffmpegFilter: string;
   engine: "FFmpeg" | "ProPainter";
   quality?: ProPainterQuality;
+  processingMode?: ProPainterProcessingMode;
+  roi?: ProPainterRoiPlan;
+  propainterParams?: ProPainterParams;
   maskPath?: string;
   createdAt: string;
 };
@@ -260,13 +266,17 @@ export async function runUploadedVideoCleanup({
   mode,
   region,
   coverColor,
-  quality
+  quality,
+  processingMode,
+  allowFullFrame
 }: {
   uploadedVideoId: string;
   mode: VideoCleanupMode;
   region: VideoCleanupRegion;
   coverColor?: string;
   quality?: ProPainterQuality;
+  processingMode?: ProPainterProcessingMode;
+  allowFullFrame?: boolean;
 }) {
   await ensureCleanupDirs();
   const uploaded = await getUploadedCleanupVideo(uploadedVideoId);
@@ -303,7 +313,9 @@ export async function runUploadedVideoCleanup({
       w: region.w,
       h: region.h,
       coverColor,
-      quality
+      quality,
+      processingMode,
+      allowFullFrame
     });
 
     const size = await assertNonEmptyFile(outputPath);
@@ -328,6 +340,9 @@ export async function runUploadedVideoCleanup({
       ffmpegFilter: result.filter,
       engine: result.engine,
       quality: result.quality,
+      processingMode: result.processingMode,
+      roi: result.roi,
+      propainterParams: result.propainterParams,
       maskPath: result.maskPath ? storageRelativePath(result.maskPath) : undefined,
       createdAt: new Date().toISOString()
     };
